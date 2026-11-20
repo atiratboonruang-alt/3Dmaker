@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -26,6 +27,7 @@ from build123d import (
     RectangleRounded,
     RegularPolygon,
     Rot,
+    SlotCenterToCenter,
     SlotOverall,
     Sphere,
     Text,
@@ -58,7 +60,7 @@ class Param:
     step: float = 1.0
     suffix: str = " mm"
     choices: list[tuple[str, str]] | None = None  # (value, label)
-    group: str = "รูปทรง"
+    group: str = "Shape"
 
 
 @dataclass
@@ -72,20 +74,20 @@ class FeatureType:
     icon: str = "■"
 
 
-MODE_CHOICES = [("add", "เพิ่มเนื้อ (Union)"), ("cut", "ตัดออก (Cut)"), ("intersect", "เหลือส่วนที่ซ้อนกัน")]
+MODE_CHOICES = [("add", "Add (union)"), ("cut", "Cut"), ("intersect", "Intersect")]
 EDGE_CHOICES = [
-    ("picked", "ที่คลิกเลือก"),
-    ("all", "ทุกขอบ"),
-    ("top", "ขอบด้านบน"),
-    ("bottom", "ขอบด้านล่าง"),
-    ("vertical", "ขอบแนวตั้ง"),
-    ("horizontal", "ขอบแนวนอน"),
+    ("picked", "Picked"),
+    ("all", "All edges"),
+    ("top", "Top edges"),
+    ("bottom", "Bottom edges"),
+    ("vertical", "Vertical edges"),
+    ("horizontal", "Horizontal edges"),
 ]
 PATTERN_CHOICES = [
-    ("none", "ไม่ทำซ้ำ"),
-    ("linear", "เรียงเป็นแถว (X)"),
-    ("grid", "ตาราง (X×Y)"),
-    ("circular", "รอบวง (รอบแกน Z)"),
+    ("none", "None"),
+    ("linear", "Row (X)"),
+    ("grid", "Grid (X×Y)"),
+    ("circular", "Circular (around Z)"),
 ]
 
 
@@ -94,21 +96,21 @@ def _dim(key, label, default, mn=0.1, mx=5000.0, step=1.0):
 
 
 def placement_params() -> list[Param]:
-    g = "ตำแหน่ง"
-    g2 = "ทำซ้ำ (Pattern)"
+    g = "Position"
+    g2 = "Pattern"
     return [
-        Param("mode", "การทำงาน", "choice", "add", choices=MODE_CHOICES, group="การทำงาน"),
+        Param("mode", "Operation", "choice", "add", choices=MODE_CHOICES, group="Operation"),
         Param("x", "X", "float", 0.0, group=g),
         Param("y", "Y", "float", 0.0, group=g),
         Param("z", "Z", "float", 0.0, group=g),
-        Param("rx", "หมุนรอบ X", "float", 0.0, -360, 360, 15, "°", group=g),
-        Param("ry", "หมุนรอบ Y", "float", 0.0, -360, 360, 15, "°", group=g),
-        Param("rz", "หมุนรอบ Z", "float", 0.0, -360, 360, 15, "°", group=g),
-        Param("pattern", "รูปแบบ", "choice", "none", choices=PATTERN_CHOICES, group=g2),
-        Param("count_x", "จำนวน (X / รอบวง)", "int", 3, 1, 500, 1, "", group=g2),
-        Param("count_y", "จำนวน (Y)", "int", 2, 1, 500, 1, "", group=g2),
-        Param("spacing_x", "ระยะห่าง X", "float", 20.0, -5000, 5000, 1, group=g2),
-        Param("spacing_y", "ระยะห่าง Y", "float", 20.0, -5000, 5000, 1, group=g2),
+        Param("rx", "Rotate X", "float", 0.0, -360, 360, 15, "°", group=g),
+        Param("ry", "Rotate Y", "float", 0.0, -360, 360, 15, "°", group=g),
+        Param("rz", "Rotate Z", "float", 0.0, -360, 360, 15, "°", group=g),
+        Param("pattern", "Type", "choice", "none", choices=PATTERN_CHOICES, group=g2),
+        Param("count_x", "Count (X / around)", "int", 3, 1, 500, 1, "", group=g2),
+        Param("count_y", "Count (Y)", "int", 2, 1, 500, 1, "", group=g2),
+        Param("spacing_x", "Spacing X", "float", 20.0, -5000, 5000, 1, group=g2),
+        Param("spacing_y", "Spacing Y", "float", 20.0, -5000, 5000, 1, group=g2),
     ]
 
 
@@ -137,7 +139,7 @@ def _torus(p):
     return Torus(p["major_radius"], p["minor_radius"], align=BED)
 
 
-def _parse_points(text: str) -> list[tuple[float, float]]:
+def _parse_points(text: str, min_pts: int = 3) -> list[tuple[float, float]]:
     pts = []
     for chunk in text.replace("\n", ";").split(";"):
         chunk = chunk.strip()
@@ -145,20 +147,20 @@ def _parse_points(text: str) -> list[tuple[float, float]]:
             continue
         xy = [c for c in chunk.replace(",", " ").split() if c]
         if len(xy) != 2:
-            raise ValueError(f"จุด '{chunk}' ต้องเป็นรูปแบบ x,y")
+            raise ValueError(f"Point '{chunk}' must be x,y")
         pts.append((float(xy[0]), float(xy[1])))
-    if len(pts) < 3:
-        raise ValueError("ต้องมีอย่างน้อย 3 จุด")
+    if len(pts) < min_pts:
+        raise ValueError(f"Needs at least {min_pts} points")
     return pts
 
 
 PROFILE_CHOICES = [
-    ("rect", "สี่เหลี่ยม"),
-    ("rounded", "สี่เหลี่ยมมุมมน"),
-    ("circle", "วงกลม"),
-    ("polygon", "หลายเหลี่ยมด้านเท่า"),
-    ("slot", "ช่องยาว (Slot)"),
-    ("custom", "กำหนดจุดเอง"),
+    ("rect", "Rectangle"),
+    ("rounded", "Rounded rectangle"),
+    ("circle", "Circle"),
+    ("polygon", "Regular polygon"),
+    ("slot", "Slot"),
+    ("custom", "Custom points"),
 ]
 
 
@@ -178,7 +180,7 @@ def _profile(p):
         return SlotOverall(max(w, h + 0.01), h)
     if kind == "custom":
         return Polygon(*_parse_points(p["points"]), align=None)
-    raise ValueError(f"ไม่รู้จักรูป {kind}")
+    raise ValueError(f"Unknown shape {kind}")
 
 
 def _extrude(p):
@@ -190,7 +192,7 @@ def _extrude(p):
 
 def _text(p):
     if not p["text"].strip():
-        raise ValueError("ยังไม่ได้ใส่ข้อความ")
+        raise ValueError("Type some text")
     sk = Text(p["text"], p["font_size"], font=p["font"] or "Arial")
     return extrude(sk, amount=p["height"])
 
@@ -207,7 +209,7 @@ def _hole(p):
 
 def _import_step(p):
     if not p["path"]:
-        raise ValueError("ยังไม่ได้เลือกไฟล์ STEP")
+        raise ValueError("Choose a STEP file")
     shape = import_step(p["path"])
     return shape * p["scale"] if p["scale"] != 1 else shape
 
@@ -231,7 +233,7 @@ def find_face(part, ref):
         if best is None or d < best[0]:
             best = (d, f)
     if best is None:
-        raise ValueError("ไม่พบหน้าที่เลือกไว้ (รูปทรงเปลี่ยนไปมาก) ลองเลือกหน้าใหม่")
+        raise ValueError("Picked face not found (the shape changed). Pick the face again")
     return best[1]
 
 
@@ -242,7 +244,7 @@ def find_edges(part, refs, tol=2.0):
         pt = Vector(*r)
         e = min(edges, key=lambda e: e.distance_to(pt))
         if e.distance_to(pt) > tol:
-            raise ValueError("ไม่พบขอบที่เลือกไว้ (รูปทรงเปลี่ยนไป) ลองเลือกขอบใหม่")
+            raise ValueError("Picked edge not found (the shape changed). Pick the edge again")
         if not any(e.is_same(o) for o in out):
             out.append(e)
     return out
@@ -262,7 +264,7 @@ def edge_ref(edge):
 def select_edges(part, which, refs=None):
     if which == "picked":
         if not refs:
-            raise ValueError("ยังไม่ได้เลือกขอบ")
+            raise ValueError("No edges picked")
         return find_edges(part, refs)
     edges = part.edges()
     if which == "top":
@@ -278,7 +280,7 @@ def select_edges(part, which, refs=None):
 
 def _need_part(part):
     if part is None:
-        raise ValueError("ต้องมีรูปทรงก่อน")
+        raise ValueError("Needs a body first")
 
 
 def _fillet(part, p):
@@ -301,7 +303,7 @@ def _shell(part, p):
         openings = faces.sort_by(Axis.Z)[0]
     elif p["opening"] == "picked":
         if not p.get("face_refs"):
-            raise ValueError("ยังไม่ได้เลือกหน้าที่จะเปิด")
+            raise ValueError("No face picked to open")
         openings = [find_face(part, r) for r in p["face_refs"]]
     return offset(part, amount=-abs(p["thickness"]), openings=openings)
 
@@ -346,18 +348,31 @@ def shape_face(plane: Plane, s: dict):
     kind = s["kind"]
     if kind == "circle":
         if s["r"] <= 0:
-            raise ValueError("รัศมีต้องมากกว่า 0")
+            raise ValueError("Radius must be greater than 0")
         sk = Pos(s["c"][0], s["c"][1]) * Circle(s["r"])
     elif kind == "rect":
         if s["w"] <= 0 or s["h"] <= 0:
-            raise ValueError("ขนาดสี่เหลี่ยมต้องมากกว่า 0")
+            raise ValueError("Rectangle size must be greater than 0")
         sk = Pos(s["c"][0], s["c"][1]) * Rectangle(s["w"], s["h"])
     elif kind == "poly":
         if len(s["pts"]) < 3:
-            raise ValueError("รูปหลายเหลี่ยมต้องมีอย่างน้อย 3 จุด")
+            raise ValueError("A polygon needs at least 3 points")
         sk = Polygon(*[tuple(pt) for pt in s["pts"]], align=None)
+    elif kind == "ngon":
+        if s["r"] <= 0:
+            raise ValueError("Radius must be greater than 0")
+        sk = Pos(s["c"][0], s["c"][1]) * RegularPolygon(s["r"], int(s["n"]), rotation=s.get("rot", 0.0))
+    elif kind == "slot":
+        (x1, y1), (x2, y2) = s["c1"], s["c2"]
+        dist = math.hypot(x2 - x1, y2 - y1)
+        if dist <= 1e-9 or s["w"] <= 0:
+            raise ValueError("Slot length and width must be greater than 0")
+        ang = math.degrees(math.atan2(y2 - y1, x2 - x1))
+        sk = Pos((x1 + x2) / 2, (y1 + y2) / 2) * SlotCenterToCenter(dist, s["w"], rotation=ang)
+    elif kind == "path":
+        return None  # open line chain: drawn and snapped to, but not a region
     else:
-        raise ValueError(f"ไม่รู้จักรูป {kind}")
+        raise ValueError(f"Unknown shape {kind}")
     return plane * sk
 
 
@@ -366,11 +381,14 @@ def build_sketch(p):
     faces = []
     errors = []
     for i, s in enumerate(p["shapes"]):
+        if s.get("kind") == "path":
+            faces.append(None)
+            continue
         try:
             faces.append(shape_face(plane, s))
         except Exception as exc:
             faces.append(None)
-            errors.append(f"รูปที่ {i + 1}: {exc}")
+            errors.append(f"Shape {i + 1}: {exc}")
     return plane, faces, errors
 
 
@@ -388,7 +406,7 @@ def _apply(part, tool, mode, d):
         mode = "add" if d > 0 else "cut"
     if part is None:
         if mode != "add":
-            raise ValueError("ยังไม่มีเนื้อให้เจาะ ลองดึงขึ้นแทน")
+            raise ValueError("There's no body to cut yet — pull up instead")
         return tool
     if mode == "add":
         return part + tool
@@ -400,17 +418,17 @@ def _apply(part, tool, mode, d):
 def _pull(part, p, ctx):
     sk = ctx["sketches"].get(p["sketch"])
     if sk is None:
-        raise ValueError("ไม่พบสเก็ตช์ที่ใช้ (อาจถูกลบหรือปิดอยู่)")
+        raise ValueError("Sketch not found (deleted or turned off)")
     plane, faces = sk
     d = float(p["distance"])
     if p.get("through"):
         d = _through_distance(part, d)
     if abs(d) < 1e-6:
-        raise ValueError("ระยะดึงต้องไม่เป็น 0")
+        raise ValueError("Distance can't be 0")
     tool = None
     for idx in p["shapes"]:
         if not (0 <= idx < len(faces)) or faces[idx] is None:
-            raise ValueError("ไม่พบรูปในสเก็ตช์")
+            raise ValueError("Shape not found in the sketch")
         t = extrude(faces[idx], amount=abs(d), dir=plane.z_dir * _sign(d))
         tool = t if tool is None else tool + t
     return _apply(part, tool, p.get("mode", "auto"), d), tool
@@ -422,7 +440,7 @@ def _pushpull(part, p, ctx):
     if p.get("through"):
         d = _through_distance(part, d)
     if abs(d) < 1e-6:
-        raise ValueError("ระยะดึงต้องไม่เป็น 0")
+        raise ValueError("Distance can't be 0")
     tool = None
     for ref in p["face_refs"]:
         face = find_face(part, ref)
@@ -431,8 +449,8 @@ def _pushpull(part, p, ctx):
     return _apply(part, tool, p.get("mode", "auto"), d), tool
 
 
-PULL_MODES = [("auto", "อัตโนมัติ"), ("add", "เพิ่มเนื้อ"), ("cut", "ตัดออก"),
-              ("intersect", "เหลือส่วนที่ซ้อนกัน")]
+PULL_MODES = [("auto", "Auto"), ("add", "Add"), ("cut", "Cut"),
+              ("intersect", "Intersect")]
 
 
 # ---------------------------------------------------------------------------
@@ -448,82 +466,82 @@ def _reg(ft: FeatureType):
     FEATURE_TYPES[ft.type_id] = ft
 
 
-_reg(FeatureType("box", "กล่อง", "body", [
-    _dim("length", "ยาว (X)", 40), _dim("width", "กว้าง (Y)", 30), _dim("height", "สูง (Z)", 20),
+_reg(FeatureType("box", "Box", "body", [
+    _dim("length", "Length (X)", 40), _dim("width", "Width (Y)", 30), _dim("height", "Height (Z)", 20),
 ], _box, "▣"))
-_reg(FeatureType("cylinder", "ทรงกระบอก", "body", [
-    _dim("radius", "รัศมี", 15), _dim("height", "สูง", 30),
+_reg(FeatureType("cylinder", "Cylinder", "body", [
+    _dim("radius", "Radius", 15), _dim("height", "Height", 30),
 ], _cylinder, "⬤"))
-_reg(FeatureType("sphere", "ทรงกลม", "body", [_dim("radius", "รัศมี", 15)], _sphere, "●"))
-_reg(FeatureType("cone", "กรวย", "body", [
-    _dim("bottom_radius", "รัศมีล่าง", 15), _dim("top_radius", "รัศมีบน", 0, 0.0), _dim("height", "สูง", 30),
+_reg(FeatureType("sphere", "Sphere", "body", [_dim("radius", "Radius", 15)], _sphere, "●"))
+_reg(FeatureType("cone", "Cone", "body", [
+    _dim("bottom_radius", "Bottom radius", 15), _dim("top_radius", "Top radius", 0, 0.0), _dim("height", "Height", 30),
 ], _cone, "▲"))
-_reg(FeatureType("torus", "โดนัท", "body", [
-    _dim("major_radius", "รัศมีวง", 20), _dim("minor_radius", "รัศมีท่อ", 5),
+_reg(FeatureType("torus", "Torus", "body", [
+    _dim("major_radius", "Ring radius", 20), _dim("minor_radius", "Tube radius", 5),
 ], _torus, "◎"))
-_reg(FeatureType("extrude", "ดึงรูป 2D ขึ้น", "body", [
-    Param("profile", "รูป 2D", "choice", "rounded", choices=PROFILE_CHOICES),
-    _dim("width", "กว้าง / เส้นผ่านศูนย์กลาง", 40), _dim("depth", "ลึก (Y)", 25),
-    _dim("corner_radius", "รัศมีมุม", 4, 0.0), Param("sides", "จำนวนด้าน", "int", 6, 3, 64, 1, ""),
-    Param("points", "จุด (x,y; x,y; ...)", "str", "0,0; 30,0; 30,10; 10,25; 0,25", suffix=""),
-    Param("height", "ความสูงที่ดึง", "float", 10, -5000, 5000),
-    Param("taper", "มุมเอียง", "float", 0, -45, 45, 1, "°"),
+_reg(FeatureType("extrude", "Profile extrude", "body", [
+    Param("profile", "Profile", "choice", "rounded", choices=PROFILE_CHOICES),
+    _dim("width", "Width / diameter", 40), _dim("depth", "Depth (Y)", 25),
+    _dim("corner_radius", "Corner radius", 4, 0.0), Param("sides", "Sides", "int", 6, 3, 64, 1, ""),
+    Param("points", "Points (x,y; x,y; ...)", "str", "0,0; 30,0; 30,10; 10,25; 0,25", suffix=""),
+    Param("height", "Extrude height", "float", 10, -5000, 5000),
+    Param("taper", "Draft angle", "float", 0, -45, 45, 1, "°"),
 ], _extrude, "⬓"))
-_reg(FeatureType("text", "ข้อความ", "body", [
-    Param("text", "ข้อความ", "str", "3D", suffix=""), _dim("font_size", "ขนาดตัวอักษร", 12),
-    Param("font", "ฟอนต์", "str", "Arial", suffix=""), Param("height", "ความหนา", "float", 2, -500, 500),
+_reg(FeatureType("text", "Text", "body", [
+    Param("text", "Text", "str", "3D", suffix=""), _dim("font_size", "Font size", 12),
+    Param("font", "Font", "str", "Arial", suffix=""), Param("height", "Thickness", "float", 2, -500, 500),
 ], _text, "A"))
-_reg(FeatureType("hole", "รูเจาะ", "body", [
-    _dim("diameter", "Ø รู", 5, step=0.5), _dim("depth", "ความลึก", 20),
-    _dim("countersink", "ปากรูบาก Ø (0=ไม่มี)", 0, 0.0),
+_reg(FeatureType("hole", "Hole", "body", [
+    _dim("diameter", "Hole Ø", 5, step=0.5), _dim("depth", "Depth", 20),
+    _dim("countersink", "Countersink Ø (0 = none)", 0, 0.0),
 ], _hole, "◌"))
-_reg(FeatureType("import_step", "นำเข้า STEP", "body", [
-    Param("path", "ไฟล์", "file", "", suffix=""),
-    Param("scale", "สเกล", "float", 1.0, 0.001, 1000, 0.1, "×"),
+_reg(FeatureType("import_step", "Import STEP", "body", [
+    Param("path", "File", "file", "", suffix=""),
+    Param("scale", "Scale", "float", 1.0, 0.001, 1000, 0.1, "×"),
 ], _import_step, "⇩"))
 for _p in FEATURE_TYPES["hole"].params:  # holes cut by default
     if _p.key == "mode":
         _p.default = "cut"
 
-_reg(FeatureType("fillet", "ลบมุมโค้ง", "modify", [
-    Param("edges", "ขอบ", "choice", "vertical", choices=EDGE_CHOICES), _dim("radius", "รัศมี", 2, 0.01, step=0.5),
+_reg(FeatureType("fillet", "Fillet", "modify", [
+    Param("edges", "Edges", "choice", "vertical", choices=EDGE_CHOICES), _dim("radius", "Radius", 2, 0.01, step=0.5),
     Param("edge_refs", "", "hidden", []),
 ], _fillet, "◜"))
-_reg(FeatureType("chamfer", "ลบมุมเฉียง", "modify", [
-    Param("edges", "ขอบ", "choice", "top", choices=EDGE_CHOICES), _dim("length", "ระยะ", 1, 0.01, step=0.5),
+_reg(FeatureType("chamfer", "Chamfer", "modify", [
+    Param("edges", "Edges", "choice", "top", choices=EDGE_CHOICES), _dim("length", "Distance", 1, 0.01, step=0.5),
     Param("edge_refs", "", "hidden", []),
 ], _chamfer, "◸"))
-_reg(FeatureType("shell", "ทำให้กลวง", "modify", [
-    _dim("thickness", "ความหนาผนัง", 1.6, 0.01, step=0.2),
-    Param("opening", "ด้านที่เปิด", "choice", "top",
-          choices=[("top", "เปิดด้านบน"), ("bottom", "เปิดด้านล่าง"), ("picked", "หน้าที่คลิกเลือก"),
-                   ("none", "ปิดทุกด้าน")]),
+_reg(FeatureType("shell", "Shell", "modify", [
+    _dim("thickness", "Wall thickness", 1.6, 0.01, step=0.2),
+    Param("opening", "Open side", "choice", "top",
+          choices=[("top", "Open top"), ("bottom", "Open bottom"), ("picked", "Picked faces"),
+                   ("none", "Closed")]),
     Param("face_refs", "", "hidden", []),
 ], _shell, "▢"))
-_reg(FeatureType("mirror", "สะท้อน", "modify", [
-    Param("plane", "ระนาบ", "choice", "YZ", choices=[("YZ", "YZ (ซ้าย-ขวา)"), ("XZ", "XZ (หน้า-หลัง)"), ("XY", "XY (บน-ล่าง)")]),
-    Param("offset", "เลื่อนระนาบ", "float", 0.0),
-    Param("keep", "เก็บของเดิมไว้ด้วย", "bool", True, suffix=""),
+_reg(FeatureType("mirror", "Mirror", "modify", [
+    Param("plane", "Plane", "choice", "YZ", choices=[("YZ", "YZ (left–right)"), ("XZ", "XZ (front–back)"), ("XY", "XY (top–bottom)")]),
+    Param("offset", "Plane offset", "float", 0.0),
+    Param("keep", "Keep original", "bool", True, suffix=""),
 ], _mirror, "⇋"))
-_reg(FeatureType("scale", "ย่อ/ขยาย", "modify", [
-    Param("factor", "สเกล", "float", 100.0, 1, 10000, 5, " %"),
+_reg(FeatureType("scale", "Scale", "modify", [
+    Param("factor", "Scale", "float", 100.0, 1, 10000, 5, " %"),
 ], _scale, "⤢"))
-_reg(FeatureType("sketch", "สเก็ตช์", "sketch", [
+_reg(FeatureType("sketch", "Sketch", "sketch", [
     Param("origin", "", "hidden", [0.0, 0.0, 0.0]),
     Param("normal", "", "hidden", [0.0, 0.0, 1.0]),
     Param("shapes", "", "hidden", []),
 ], build_sketch, "✎"))
-_reg(FeatureType("pull", "ดึงสเก็ตช์", "op", [
-    Param("distance", "ระยะ (+ขึ้น / −ลง)", "float", 10.0, -10000, 10000, 1),
-    Param("through", "เจาะทะลุ", "bool", False, suffix=""),
-    Param("mode", "การทำงาน", "choice", "auto", choices=PULL_MODES),
+_reg(FeatureType("pull", "Extrude", "op", [
+    Param("distance", "Distance (+up / −down)", "float", 10.0, -10000, 10000, 1),
+    Param("through", "Cut through", "bool", False, suffix=""),
+    Param("mode", "Operation", "choice", "auto", choices=PULL_MODES),
     Param("sketch", "", "hidden", ""),
     Param("shapes", "", "hidden", [0]),
 ], _pull, "⇧"))
-_reg(FeatureType("pushpull", "ดึงหน้า", "op", [
-    Param("distance", "ระยะ (+ออก / −เข้า)", "float", 5.0, -10000, 10000, 1),
-    Param("through", "ทะลุ", "bool", False, suffix=""),
-    Param("mode", "การทำงาน", "choice", "auto", choices=PULL_MODES),
+_reg(FeatureType("pushpull", "Push/Pull face", "op", [
+    Param("distance", "Distance (+out / −in)", "float", 5.0, -10000, 10000, 1),
+    Param("through", "Through all", "bool", False, suffix=""),
+    Param("mode", "Operation", "choice", "auto", choices=PULL_MODES),
     Param("face_refs", "", "hidden", []),
 ], _pushpull, "⇕"))
 
@@ -604,7 +622,7 @@ def build_feature(part, feat: Feature, ctx=None):
     mode = p.get("mode", "add")
     if part is None:
         if mode != "add":
-            raise ValueError("ต้องมีรูปทรงก่อนจึงจะตัดหรือหาส่วนซ้อนได้")
+            raise ValueError("Needs a body first to cut or intersect")
         return tool, tool
     if mode == "add":
         return part + tool, tool
@@ -617,7 +635,7 @@ def friendly_error(exc: Exception) -> str:
     msg = str(exc).strip()
     if any("\u0e00" <= ch <= "\u0e7f" for ch in msg):  # our own Thai messages
         return msg
-    hint = "คำนวณรูปทรงไม่สำเร็จ ลองลดค่ารัศมี/ความหนา หรือเปลี่ยนตำแหน่ง/ลำดับขั้นตอน"
+    hint = "Couldn't build this step. Try a smaller radius or thickness, or move it / change the order"
     return f"{hint} ({msg or exc.__class__.__name__})"
 
 
@@ -642,7 +660,7 @@ def rebuild(features: list[Feature]):
         try:
             new_part, tool = build_feature(part, feat, ctx)
             if new_part is not None and getattr(new_part, "volume", 1) <= 1e-9 and part is not None:
-                raise ValueError("ผลลัพธ์ไม่มีเนื้อเหลือ")
+                raise ValueError("Nothing would be left of the body")
             part = new_part
             tools.append(tool)
         except Exception as exc:  # keep going with the last good part
@@ -738,6 +756,9 @@ class Document:
                     s["c"] = [s["c"][0] + du, s["c"][1] + dv]
                 if "pts" in s:
                     s["pts"] = [[p[0] + du, p[1] + dv] for p in s["pts"]]
+                for key in ("c1", "c2"):
+                    if key in s:
+                        s[key] = [s[key][0] + du, s[key][1] + dv]
                 self.checkpoint()
                 f.params["shapes"].append(s)
                 f.enabled = True
@@ -845,14 +866,14 @@ def set_path(params, key, value):
         cur = cur[int(part)] if isinstance(cur, list) else cur[part]
     last = parts[-1]
     if last == "pts" and isinstance(value, str):
-        value = [list(p) for p in _parse_points(value)]
+        value = [list(p) for p in _parse_points(value, 2)]
     if isinstance(cur, list):
         cur[int(last)] = value
     else:
         cur[last] = value
 
 
-SHAPE_LABELS = {"circle": "วงกลม", "rect": "สี่เหลี่ยม", "poly": "หลายเหลี่ยม"}
+SHAPE_LABELS = {"ngon": "Polygon", "slot": "Slot", "path": "Lines", "circle": "Circle", "rect": "Rectangle", "poly": "Polygon"}
 
 
 def sketch_params(feat: Feature) -> list[Param]:
@@ -861,15 +882,26 @@ def sketch_params(feat: Feature) -> list[Param]:
         g = f"{i + 1}. {SHAPE_LABELS.get(s['kind'], s['kind'])}"
         k = f"shapes.{i}"
         if s["kind"] in ("circle", "rect"):
-            out += [Param(f"{k}.c.0", "ศูนย์กลาง X", "float", 0.0, group=g),
-                    Param(f"{k}.c.1", "ศูนย์กลาง Y", "float", 0.0, group=g)]
+            out += [Param(f"{k}.c.0", "Center X", "float", 0.0, group=g),
+                    Param(f"{k}.c.1", "Center Y", "float", 0.0, group=g)]
         if s["kind"] == "circle":
-            out.append(Param(f"{k}.r", "รัศมี", "float", 5.0, 0.01, 10000, 0.5, group=g))
+            out.append(Param(f"{k}.r", "Radius", "float", 5.0, 0.01, 10000, 0.5, group=g))
         elif s["kind"] == "rect":
-            out += [Param(f"{k}.w", "กว้าง", "float", 10.0, 0.01, 10000, group=g),
-                    Param(f"{k}.h", "สูง", "float", 10.0, 0.01, 10000, group=g)]
-        elif s["kind"] == "poly":
-            out.append(Param(f"{k}.pts", "จุด (x,y; ...)", "points", "", suffix="", group=g))
+            out += [Param(f"{k}.w", "Width", "float", 10.0, 0.01, 10000, group=g),
+                    Param(f"{k}.h", "Height", "float", 10.0, 0.01, 10000, group=g)]
+        elif s["kind"] in ("poly", "path"):
+            out.append(Param(f"{k}.pts", "Points (x,y; ...)", "points", "", suffix="", group=g))
+        elif s["kind"] == "ngon":
+            out += [Param(f"{k}.c.0", "Center X", "float", 0.0, group=g),
+                    Param(f"{k}.c.1", "Center Y", "float", 0.0, group=g),
+                    Param(f"{k}.r", "Radius", "float", 5.0, 0.01, 10000, 0.5, group=g),
+                    Param(f"{k}.n", "Sides", "int", 6, 3, 64, 1, "", group=g)]
+        elif s["kind"] == "slot":
+            out += [Param(f"{k}.c1.0", "Start X", "float", 0.0, group=g),
+                    Param(f"{k}.c1.1", "Start Y", "float", 0.0, group=g),
+                    Param(f"{k}.c2.0", "End X", "float", 0.0, group=g),
+                    Param(f"{k}.c2.1", "End Y", "float", 0.0, group=g),
+                    Param(f"{k}.w", "Width", "float", 5.0, 0.01, 10000, 0.5, group=g)]
     return out
 
 

@@ -1,23 +1,23 @@
 """Visual design tokens and the Qt stylesheet.
 
-Direction: a calm, light workshop (cool grey studio light around the print
-bed) with one strong element — the dark command bar under the viewport that
-always shows what you can do with the current selection.
+Direction: a dark, quiet modelling studio so the part and the sketch
+(light grey body, amber sketch lines, cobalt selection) carry all the colour.
 """
 import os
 
 from PySide6.QtGui import QFont, QFontDatabase
 
 # --- tokens -----------------------------------------------------------------
-INK = "#17202b"        # text, command bar
-INK_SOFT = "#5b6878"   # secondary text
-LINE = "#e1e6ec"       # hairlines
-CHROME = "#f5f7fa"     # window background
-PANEL = "#ffffff"      # panels, inputs
-COBALT = "#1f5bff"     # selection + primary action
-AMBER = "#f2a81d"      # sketches
-ADD_GREEN = "#1e9e5a"
-CUT_RED = "#de4a3c"
+INK = "#e8e9ec"        # primary text
+INK_SOFT = "#9a9ea8"   # secondary text
+LINE = "#33363c"       # hairlines
+CHROME = "#1b1c1f"     # window background
+PANEL = "#232428"      # panels
+RAISED = "#2c2e33"     # buttons, inputs
+COBALT = "#3d8bff"     # selection + primary action
+AMBER = "#ffb02e"      # sketches
+ADD_GREEN = "#2fbf71"
+CUT_RED = "#ff5a4e"
 
 FONT_FAMILY = "IBM Plex Sans Thai"
 _FONT_DIR = os.path.join(os.path.dirname(__file__), "fonts")
@@ -69,94 +69,91 @@ def apply_theme(app):
 
 
 STYLE = f"""
-* {{ font-family: "__FONT__", "Leelawadee UI", "Segoe UI", sans-serif; font-size: 10pt; }}
+* {{ font-family: "__FONT__", "Segoe UI", sans-serif; font-size: 10pt; }}
 QMainWindow, QWidget {{ background: {CHROME}; color: {INK}; }}
-QMenuBar {{ background: {PANEL}; border-bottom: 1px solid {LINE}; }}
-QMenuBar::item {{ padding: 5px 10px; background: transparent; }}
-QMenuBar::item:selected, QMenu::item:selected {{ background: #e9efff; color: {INK}; }}
+QMenuBar {{ background: {CHROME}; border-bottom: 1px solid {LINE}; padding: 2px 4px; }}
+QMenuBar::item {{ padding: 5px 10px; background: transparent; border-radius: 6px; }}
+QMenuBar::item:selected {{ background: {RAISED}; }}
 QMenu {{ background: {PANEL}; border: 1px solid {LINE}; padding: 4px; }}
 QMenu::item {{ padding: 7px 22px 7px 14px; border-radius: 6px; }}
+QMenu::item:selected {{ background: {COBALT}; color: white; }}
 QMenu::separator {{ height: 1px; background: {LINE}; margin: 4px 6px; }}
 
-/* top bar */
-QToolBar#topBar {{ background: {PANEL}; border: none; border-bottom: 1px solid {LINE}; padding: 4px 10px;
+QToolBar#topBar {{ background: {CHROME}; border: none; border-bottom: 1px solid {LINE}; padding: 4px 10px;
                    spacing: 2px; }}
 QWidget#spacer {{ background: transparent; }}
 QLabel#docName {{ background: transparent; color: {INK}; font-weight: 600; padding: 0 12px; }}
-QToolButton {{ background: transparent; border: none; border-radius: 8px; padding: 6px 9px; color: {INK}; }}
-QToolButton:hover {{ background: #eef2f7; }}
-QToolButton:pressed {{ background: #e2e8f1; }}
+QToolButton {{ background: transparent; border: none; border-radius: 7px; padding: 6px 8px; color: {INK}; }}
+QToolButton:hover {{ background: {RAISED}; }}
 QToolButton::menu-indicator {{ image: none; width: 0; }}
-QToolButton#primary {{ background: {COBALT}; color: white; font-weight: 600; padding: 7px 16px; }}
-QToolButton#primary:hover {{ background: #3a6fff; }}
+QToolButton#primary {{ background: {COBALT}; color: white; font-weight: 600; padding: 6px 14px; }}
+QToolButton#primary:hover {{ background: #5a9cff; }}
 
-/* tool rail */
-QToolBar#toolRail {{ background: {PANEL}; border: none; border-right: 1px solid {LINE}; padding: 8px 6px;
-                     spacing: 4px; }}
-QToolBar#toolRail QToolButton {{ min-width: 60px; max-width: 64px; padding: 8px 2px 6px 2px; font-size: 9pt;
-                                 border-radius: 10px; }}
-QToolBar#toolRail QToolButton:checked {{ background: {INK}; color: white; }}
-QLabel#railCaption {{ color: {INK_SOFT}; font-size: 8pt; padding-top: 6px; background: transparent; }}
+/* tool panel (left) */
+QStackedWidget#toolPanel, QWidget#panelPage {{ background: {CHROME}; }}
+QFrame#panelItem {{ background: transparent; border-radius: 9px; }}
+QFrame#panelItem:hover {{ background: #24262a; }}
+QFrame#panelItem[active="true"] {{ background: #26303f; }}
+QToolButton#panelIcon {{ background: {RAISED}; border-radius: 9px; padding: 7px; }}
+QToolButton#panelIcon:checked {{ background: {COBALT}; }}
+QLabel#panelName {{ background: transparent; font-weight: 600; }}
+QLabel#panelSub {{ background: transparent; color: {INK_SOFT}; font-size: 8.5pt; }}
+QLabel#keyChip {{ background: {RAISED}; color: {INK_SOFT}; border-radius: 4px; padding: 0 5px; font-size: 8pt; }}
+QFrame#panelSep {{ background: {LINE}; }}
 
-/* coach line above the viewport */
-QLabel#hintBar {{ background: {PANEL}; color: {INK}; border-bottom: 1px solid {LINE};
-                  border-left: 4px solid {COBALT}; padding: 8px 14px; }}
+/* instructions, centred above the viewport */
+QFrame#hintStrip {{ background: {CHROME}; border-bottom: 1px solid {LINE}; }}
+QLabel#hintBar {{ background: {PANEL}; color: {INK}; border: 1px solid {LINE}; border-radius: 9px;
+                  padding: 8px 16px; }}
 
-/* the signature element: dark command bar under the viewport */
-QFrame#contextBar {{ background: {INK}; min-height: 50px; }}
-QFrame#contextBar QLabel {{ background: transparent; color: #c9d2de; }}
-QFrame#contextBar QLabel#contextTitle {{ color: white; font-weight: 600; font-size: 10.5pt; padding-right: 6px; }}
-QFrame#contextBar QFrame#sep {{ background: #33404f; max-width: 1px; min-width: 1px; }}
-QFrame#contextBar QPushButton {{ background: #26303d; color: white; border: 1px solid #33404f;
-                                border-radius: 8px; padding: 7px 13px; }}
-QFrame#contextBar QPushButton:hover {{ background: #33404f; border-color: #4a596b; }}
-QFrame#contextBar QPushButton:pressed {{ background: #3d4b5d; }}
-QFrame#contextBar QPushButton#primaryButton {{ background: {COBALT}; border-color: {COBALT}; font-weight: 600; }}
-QFrame#contextBar QPushButton#primaryButton:hover {{ background: #3a6fff; }}
-QFrame#contextBar QPushButton#dangerButton {{ background: transparent; border-color: #5a3a3a; color: #ffb4ab; }}
-QFrame#contextBar QDoubleSpinBox {{ background: #26303d; color: white; border: 1px solid #3d4b5d;
-                                   selection-background-color: {COBALT}; }}
-QFrame#contextBar QDoubleSpinBox:focus {{ border-color: {COBALT}; }}
-
-/* general controls */
-QPushButton {{ background: {PANEL}; border: 1px solid #d3dae3; border-radius: 8px; padding: 6px 12px; }}
-QPushButton:hover {{ background: #f1f5fa; border-color: #b8c4d4; }}
+/* command bar under the viewport */
+QFrame#contextBar {{ background: {PANEL}; border-top: 1px solid {LINE}; min-height: 50px; }}
+QFrame#contextBar QLabel {{ background: transparent; color: {INK_SOFT}; }}
+QFrame#contextBar QLabel#contextTitle {{ color: {INK}; font-weight: 600; font-size: 10.5pt; padding-right: 6px; }}
+QFrame#contextBar QFrame#sep {{ background: {LINE}; }}
+QPushButton {{ background: {RAISED}; color: {INK}; border: 1px solid #3a3d44; border-radius: 8px; padding: 7px 13px; }}
+QPushButton:hover {{ background: #363940; border-color: #4a4e57; }}
+QPushButton:pressed {{ background: #3e424a; }}
 QPushButton:focus {{ border-color: {COBALT}; }}
+QPushButton#primaryButton {{ background: {COBALT}; border-color: {COBALT}; color: white; font-weight: 600; }}
+QPushButton#primaryButton:hover {{ background: #5a9cff; }}
+QPushButton#dangerButton {{ background: transparent; border-color: #5a3434; color: #ff9b92; }}
+
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
-  background: {PANEL}; border: 1px solid #d3dae3; border-radius: 7px; padding: 5px 8px; min-height: 20px;
-  selection-background-color: {COBALT}; selection-color: white;
+  background: {RAISED}; color: {INK}; border: 1px solid #3a3d44; border-radius: 7px; padding: 5px 8px;
+  min-height: 20px; selection-background-color: {COBALT}; selection-color: white;
 }}
 QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {{ width: 0px; border: none; }}
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{ border: 1px solid {COBALT}; }}
 QComboBox::drop-down {{ border: none; width: 18px; }}
-QComboBox QAbstractItemView {{ background: {PANEL}; selection-background-color: #e9efff; selection-color: {INK}; }}
+QComboBox QAbstractItemView {{ background: {PANEL}; color: {INK}; selection-background-color: {COBALT}; }}
 
-/* right side: history + properties */
-QDockWidget {{ titlebar-close-icon: none; }}
-QDockWidget::title {{ background: {PANEL}; padding: 9px 10px; font-weight: 600; border-bottom: 1px solid {LINE}; }}
+/* history + properties (right) */
+QDockWidget {{ titlebar-close-icon: none; color: {INK}; }}
+QDockWidget::title {{ background: {CHROME}; padding: 9px 10px; border-bottom: 1px solid {LINE}; }}
 QSplitter::handle {{ background: {LINE}; height: 1px; }}
 QListWidget {{ background: {PANEL}; border: 1px solid {LINE}; border-radius: 10px; padding: 4px; outline: 0; }}
 QListWidget::item {{ padding: 7px 6px; border-radius: 6px; }}
-QListWidget::item:hover {{ background: #f1f5fa; }}
-QListWidget::item:selected {{ background: #e9efff; color: {INK}; }}
+QListWidget::item:hover {{ background: #2a2c31; }}
+QListWidget::item:selected {{ background: #26303f; color: {INK}; }}
+QScrollArea, QScrollArea > QWidget > QWidget {{ background: {CHROME}; border: none; }}
 QLabel#panelTitle {{ font-size: 12.5pt; font-weight: 600; padding: 4px 0; background: transparent; }}
 QLabel#hint {{ color: {INK_SOFT}; background: transparent; }}
-QLabel#error {{ color: #9f1f17; background: #fdeceb; border: 1px solid #f5c6c2; border-radius: 8px; padding: 7px; }}
+QLabel#error {{ color: #ffb4ab; background: #3a2224; border: 1px solid #5a3434; border-radius: 8px; padding: 7px; }}
 QGroupBox {{ background: {PANEL}; border: 1px solid {LINE}; border-radius: 10px; margin-top: 16px;
              padding: 10px 8px 8px 8px; }}
 QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 4px; color: {INK_SOFT}; }}
 QGroupBox QLabel, QGroupBox QCheckBox {{ background: transparent; }}
-
-QStatusBar {{ background: {PANEL}; border-top: 1px solid {LINE}; color: {INK_SOFT}; }}
-QStatusBar QLabel {{ background: transparent; padding: 0 4px; }}
-QScrollArea {{ border: none; }}
-QScrollBar:vertical {{ background: transparent; width: 10px; }}
-QScrollBar::handle:vertical {{ background: #cbd3dd; border-radius: 5px; min-height: 30px; }}
-QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
-QCheckBox::indicator, QListWidget::indicator {{ width: 16px; height: 16px; border: 1.5px solid #9aa7b8;
-                                              border-radius: 4px; background: {PANEL}; }}
+QCheckBox::indicator, QListWidget::indicator {{ width: 16px; height: 16px; border: 1.5px solid #5a5e66;
+                                              border-radius: 4px; background: {RAISED}; }}
 QCheckBox::indicator:hover, QListWidget::indicator:hover {{ border-color: {COBALT}; }}
 QCheckBox::indicator:checked, QListWidget::indicator:checked {{ background: {COBALT}; border-color: {COBALT};
                                                               image: url(__CHECK__); }}
-QToolTip {{ background: {INK}; color: white; border: none; padding: 7px; }}
+
+QStatusBar {{ background: {CHROME}; border-top: 1px solid {LINE}; color: {INK_SOFT}; }}
+QStatusBar QLabel {{ background: transparent; padding: 0 4px; color: {INK_SOFT}; }}
+QScrollBar:vertical {{ background: transparent; width: 10px; }}
+QScrollBar::handle:vertical {{ background: #44474e; border-radius: 5px; min-height: 30px; }}
+QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
+QToolTip {{ background: #0f1012; color: white; border: 1px solid {LINE}; padding: 7px; }}
 """

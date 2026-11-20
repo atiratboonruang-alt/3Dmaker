@@ -36,12 +36,19 @@ _P = {
     "look": '<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
     "import": '<path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 17v3h16v-3"/>',
     "history": '<path d="M4 12a8 8 0 108-8 8 8 0 00-6 2.7"/><path d="M4 4v4h4M12 8v4l3 2"/>',
+    "sketch": '<path d="M4 20c2-7 6-12 13-14"/><circle cx="4" cy="20" r="1.4"/><circle cx="17" cy="6" r="1.4"/>'
+              '<path d="M17 14v6M14 17h6"/>',
+    "plus": '<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M12 8v8M8 12h8"/>',
+    "tools": '<path d="M14.5 5.5a3.5 3.5 0 004.6 4.6L10 19.2a2 2 0 01-2.8-2.8z"/><path d="M5 5l4 4M4 8l4-4"/>',
+    "close": '<path d="M6 6l12 12M18 6L6 18"/>',
+    "polygon": '<path d="M12 3l8 5.5-3 9.5H7L4 8.5z"/>',
+    "slot": '<rect x="3" y="8" width="18" height="8" rx="4"/><circle cx="7" cy="12" r="1"/><circle cx="17" cy="12" r="1"/>',
     "help": '<circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 015 .5c0 1.7-2.5 2-2.5 4M12 17h.01"/>',
 }
 
 
 @lru_cache(maxsize=None)
-def icon(name: str, color: str = "#2b3440", size: int = 48) -> QIcon:
+def icon(name: str, color: str = "#e8e9ec", size: int = 48) -> QIcon:
     body = _P.get(name, _P["more"])
     svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{color}" '
            f'stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">{body}</svg>')

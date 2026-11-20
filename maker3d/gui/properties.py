@@ -92,7 +92,7 @@ class PropertyPanel(QScrollArea):
         lay = QVBoxLayout(root)
         lay.setContentsMargins(8, 8, 8, 8)
         if feat is None:
-            hint = QLabel("เลือกขั้นตอนทางซ้าย\nหรือกดปุ่มรูปทรงด้านบนเพื่อเริ่ม")
+            hint = QLabel("Select a step in History to edit it,\nor double-click a face to start sketching.")
             hint.setAlignment(Qt.AlignCenter)
             hint.setObjectName("hint")
             lay.addStretch(1)
@@ -117,7 +117,7 @@ class PropertyPanel(QScrollArea):
         if feat.type_id == "sketch":
             params += sketch_params(feat)
             if not params:
-                lay.addWidget(QLabel("สเก็ตช์ว่าง"))
+                lay.addWidget(QLabel("This sketch is empty"))
         for prm in params:
             box = self._groups.get(prm.group)
             if box is None:
@@ -181,10 +181,10 @@ class PropertyPanel(QScrollArea):
             h.setContentsMargins(0, 0, 0, 0)
             edit = QLineEdit(str(value))
             edit.setReadOnly(True)
-            btn = QPushButton("เลือก…")
+            btn = QPushButton("Browse…")
 
             def pick(_=False, k=key, e=edit):
-                path, _f = QFileDialog.getOpenFileName(self, "เลือกไฟล์ STEP", "", "STEP (*.step *.stp)")
+                path, _f = QFileDialog.getOpenFileName(self, "Choose a STEP file", "", "STEP (*.step *.stp)")
                 if path:
                     e.setText(path)
                     self._emit(k, path)

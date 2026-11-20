@@ -1,11 +1,16 @@
-"""Main application window (Shapr3D-style: select something, then act on it)."""
+"""Main application window.
+
+Layout:  top bar · [tool panel | coach line / viewport / command bar] · history
+The tool panel switches between Modeling and Sketching, like a direct-modelling
+CAD app: double-click a face to sketch on it, draw, exit, then drag to extrude.
+"""
 from __future__ import annotations
 
 import os
 import traceback
 
-from PySide6.QtCore import QSettings, QSize, Qt, QTimer
-from PySide6.QtGui import QAction, QActionGroup, QKeySequence
+from PySide6.QtCore import QSettings, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -22,7 +27,9 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSizePolicy,
+    QSpinBox,
     QSplitter,
+    QStackedWidget,
     QToolBar,
     QToolButton,
     QVBoxLayout,
@@ -43,13 +50,82 @@ from ..model import (
 )
 from .icons import icon
 from .properties import PropertyPanel
-from .viewport import DRAW_TOOLS, Viewport
+from .viewport import SKETCH_TOOLS, TOOL_NAMES, Viewport
 
 APP_NAME = "3D Maker"
-FILE_FILTER = "โปรเจกต์ 3D Maker (*.3dmk)"
+FILE_FILTER = "3D Maker project (*.3dmk)"
 
-SHAPE_MENU = ["box", "cylinder", "sphere", "cone", "torus", "extrude", "text"]
-MORE_MENU = ["hole", "fillet", "chamfer", "shell", "mirror", "scale", "import_step"]
+INSERT_MENU = ["box", "cylinder", "sphere", "cone", "torus", "text", "extrude", "import_step"]
+TOOLS_MENU = ["hole", "fillet", "chamfer", "shell", "mirror", "scale"]
+
+
+class PanelItem(QFrame):
+    """One row of the tool panel: square icon button, name, shortcut chip."""
+
+    clicked = Signal()
+
+    def __init__(self, icon_name, text, shortcut="", sub="", menu=None, parent=None):
+        super().__init__(parent)
+        self.setObjectName("panelItem")
+        self.setCursor(Qt.PointingHandCursor)
+        self.menu = menu
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(4, 3, 8, 3)
+        lay.setSpacing(10)
+        self.btn = QToolButton()
+        self.btn.setObjectName("panelIcon")
+        self.btn.setIcon(icon(icon_name, "#e8e9ec"))
+        self.btn.setIconSize(QSize(22, 22))
+        self.btn.setCheckable(True)
+        self.btn.clicked.connect(self._click)
+        lay.addWidget(self.btn)
+        col = QVBoxLayout()
+        col.setSpacing(0)
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        self.name = QLabel(text)
+        self.name.setObjectName("panelName")
+        row.addWidget(self.name)
+        for part in [p for p in shortcut.split("+") if p]:
+            chip = QLabel(part)
+            chip.setObjectName("keyChip")
+            chip.setFixedHeight(18)
+            chip.setAlignment(Qt.AlignCenter)
+            row.addWidget(chip, 0, Qt.AlignVCenter)
+        if menu is not None:
+            arrow = QLabel("▸")
+            arrow.setObjectName("panelSub")
+            row.addWidget(arrow)
+        row.addStretch(1)
+        col.addLayout(row)
+        self.sub = QLabel(sub)
+        self.sub.setObjectName("panelSub")
+        self.sub.setVisible(bool(sub))
+        col.addWidget(self.sub)
+        lay.addLayout(col, 1)
+        tip = text + (f" ({shortcut})" if shortcut else "")
+        self.setToolTip(tip)
+
+    def set_sub(self, text):
+        self.sub.setText(text)
+        self.sub.setVisible(bool(text))
+
+    def set_checked(self, on):
+        self.btn.setChecked(on)
+        self.setProperty("active", on)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def _click(self):
+        self.btn.setChecked(self.property("active") is True)
+        if self.menu is not None:
+            self.menu.exec(self.mapToGlobal(self.rect().topRight()))
+        else:
+            self.clicked.emit()
+
+    def mousePressEvent(self, ev):  # noqa: N802
+        if ev.button() == Qt.LeftButton:
+            self._click()
 
 
 class MainWindow(QMainWindow):
@@ -60,6 +136,7 @@ class MainWindow(QMainWindow):
         self.tools: list = []
         self.settings = QSettings("3DMaker", "3DMaker")
         self._show_tool = False
+        self._session_shapes: list[tuple[str, int]] = []
         self._rebuild_timer = QTimer(self, singleShot=True, interval=120)
         self._rebuild_timer.timeout.connect(self.regenerate)
 
@@ -69,10 +146,10 @@ class MainWindow(QMainWindow):
         self.viewport.shapeDrawn.connect(self.on_shape_drawn)
         self.viewport.pullDragged.connect(self.on_pull_dragged)
         self.viewport.toolChanged.connect(self.on_tool_changed)
+        self.viewport.modeChanged.connect(self.on_mode_changed)
 
         self._build_actions()
         self._build_top_bar()
-        self._build_tool_rail()
         self._build_center()
         self._build_side_dock()
         self._build_status()
@@ -80,6 +157,7 @@ class MainWindow(QMainWindow):
         self.refresh_history()
         self.regenerate()
         self.viewport.set_tool("select")
+        self.on_mode_changed("model")
 
     # ------------------------------------------------------------------ UI
     def _act(self, text, slot, shortcut=None, icon_name=None, tip=None):
@@ -88,112 +166,90 @@ class MainWindow(QMainWindow):
         if shortcut:
             a.setShortcut(QKeySequence(shortcut))
         if icon_name:
-            a.setIcon(icon(icon_name))
+            a.setIcon(icon(icon_name, "#e8e9ec"))
         sc = f" ({QKeySequence(shortcut).toString()})" if shortcut else ""
         a.setToolTip((tip or text) + sc)
         self.addAction(a)
         return a
 
     def _build_actions(self):
-        self.a_new = self._act("ใหม่", self.file_new, QKeySequence.New, "new")
-        self.a_open = self._act("เปิด", self.file_open, QKeySequence.Open, "open")
-        self.a_save = self._act("บันทึก", self.file_save, QKeySequence.Save, "save")
-        self.a_save_as = self._act("บันทึกเป็น…", self.file_save_as, QKeySequence.SaveAs)
-        self.a_export = self._act("ส่งออก", self.file_export, "Ctrl+E", "export", "ส่งออก STL / 3MF / STEP")
-        self.a_undo = self._act("ย้อนกลับ", self.undo, QKeySequence.Undo, "undo")
-        self.a_redo = self._act("ทำซ้ำ", self.redo, "Ctrl+Y", "redo")
-        self.a_delete = self._act("ลบ", self.delete_selected, QKeySequence.Delete, "trash")
-        self.a_dup = self._act("คัดลอกขั้นตอน", self.duplicate_selected, "Ctrl+D")
-        self.a_fit = self._act("พอดีจอ", self.viewport.fit, "F", "fit")
-        self.a_help = self._act("วิธีใช้", self.show_help, "F1", "help")
-
-        self.tool_group = QActionGroup(self)
-        self.tool_actions = {}
-        for key, label, sc, ic in [("select", "เลือก", "V", "select"), ("poly", "เส้น", "L", "line"),
-                                   ("rect", "สี่เหลี่ยม", "R", "rect"), ("circle", "วงกลม", "C", "circle")]:
-            a = self._act(label, lambda _=False, k=key: self.viewport.set_tool(k), sc, ic)
-            a.setCheckable(True)
-            self.tool_group.addAction(a)
-            self.tool_actions[key] = a
+        self.a_new = self._act("New", self.file_new, QKeySequence.New, "new")
+        self.a_open = self._act("Open…", self.file_open, QKeySequence.Open, "open")
+        self.a_save = self._act("Save", self.file_save, QKeySequence.Save, "save")
+        self.a_save_as = self._act("Save As…", self.file_save_as, QKeySequence.SaveAs)
+        self.a_export = self._act("Export", self.file_export, "Ctrl+E", "export", "Export STL / 3MF / STEP")
+        self.a_undo = self._act("Undo", self.undo, QKeySequence.Undo, "undo")
+        self.a_redo = self._act("Redo", self.redo, "Ctrl+Y", "redo")
+        self.a_delete = self._act("Delete", self.delete_selected, QKeySequence.Delete, "trash")
+        self.a_dup = self._act("Duplicate Step", self.duplicate_selected, "Ctrl+D")
+        self.a_fit = self._act("Fit View", self.viewport.fit, "F", "fit")
+        self.a_help = self._act("Quick Guide", self.show_help, "F1", "help")
+        self.tool_shortcuts = {}
+        for key, sc in [("select", "V"), ("line", "L"), ("rect", "R"), ("circle", "C"), ("polygon", "G"),
+                        ("slot", "S")]:
+            self.tool_shortcuts[key] = self._act(TOOL_NAMES[key], lambda _=False, k=key: self.viewport.set_tool(k),
+                                                 sc)
+        self._act("Sketch", self.start_sketch, "K")
+        self._act("Exit Sketching", self.viewport.exit_sketch, "Ctrl+Return")
 
         menu = self.menuBar()
-        m = menu.addMenu("ไฟล์")
+        m = menu.addMenu("File")
         for a in (self.a_new, self.a_open, self.a_save, self.a_save_as):
             m.addAction(a)
         m.addSeparator()
         m.addAction(self.a_export)
         m.addSeparator()
-        m.addAction(self._act("ออก", self.close, QKeySequence.Quit))
-        m = menu.addMenu("แก้ไข")
+        m.addAction(self._act("Quit", self.close, QKeySequence.Quit))
+        m = menu.addMenu("Edit")
         for a in (self.a_undo, self.a_redo, self.a_dup, self.a_delete):
             m.addAction(a)
-        m = menu.addMenu("มุมมอง")
+        m = menu.addMenu("Insert")
+        for t in INSERT_MENU + TOOLS_MENU:
+            m.addAction(FEATURE_TYPES[t].label, lambda t=t: self.add_feature(t))
+        m = menu.addMenu("View")
+        for key, label, sc in [("iso", "Isometric", "Ctrl+0"), ("top", "Top", "Ctrl+1"), ("front", "Front", "Ctrl+2"),
+                               ("right", "Right", "Ctrl+3"), ("back", "Back", None), ("left", "Left", None),
+                               ("bottom", "Bottom", None)]:
+            m.addAction(self._act(label, lambda _=False, k=key: self.viewport.set_view(k), sc))
+        m.addSeparator()
         m.addAction(self.a_fit)
-        self.a_edges = self._act("แสดงเส้นขอบ", self.toggle_edges)
+        self.a_edges = self._act("Show Edges", self.toggle_edges)
         self.a_edges.setCheckable(True)
         self.a_edges.setChecked(True)
         m.addAction(self.a_edges)
-        self.a_bed = self._act("แสดงฐานพิมพ์", self.toggle_bed)
+        self.a_bed = self._act("Show Print Bed", self.toggle_bed)
         self.a_bed.setCheckable(True)
         self.a_bed.setChecked(True)
         m.addAction(self.a_bed)
-        self.a_ortho = self._act("มุมมองแบบขนาน (ไม่มีมุมเปอร์สเปกทีฟ)",
-                                 lambda: self.viewport.set_parallel(self.a_ortho.isChecked()), "Ctrl+P")
+        self.a_ortho = self._act("Orthographic", lambda: self.viewport.set_parallel(self.a_ortho.isChecked()),
+                                 "Ctrl+P")
         self.a_ortho.setCheckable(True)
         m.addAction(self.a_ortho)
-        m = menu.addMenu("ช่วยเหลือ")
+        m = menu.addMenu("Help")
         m.addAction(self.a_help)
-        m.addAction(self._act("เปิดโฟลเดอร์บันทึกข้อผิดพลาด", self.open_log_folder))
-
-    def _menu_button(self, text, icon_name, entries, tip):
-        b = QToolButton()
-        b.setText(text)
-        b.setIcon(icon(icon_name))
-        b.setToolTip(tip)
-        b.setPopupMode(QToolButton.InstantPopup)
-        b.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
-        b.setObjectName("railButton")
-        menu = QMenu(b)
-        for type_id in entries:
-            ft = FEATURE_TYPES[type_id]
-            menu.addAction(f"{ft.icon}   {ft.label}", lambda t=type_id: self.add_feature(t))
-        b.setMenu(menu)
-        return b
+        m.addAction(self._act("Open Error Log Folder", self.open_log_folder))
 
     def _build_top_bar(self):
-        tb = QToolBar("หลัก", self)
+        tb = QToolBar("Main", self)
         tb.setObjectName("topBar")
         tb.setMovable(False)
-        tb.setIconSize(QSize(20, 20))
-        tb.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        tb.setIconSize(QSize(18, 18))
+        tb.setToolButtonStyle(Qt.ToolButtonIconOnly)
         for a in (self.a_new, self.a_open, self.a_save):
             tb.addAction(a)
         tb.addSeparator()
         tb.addAction(self.a_undo)
         tb.addAction(self.a_redo)
-        for _ in range(2):
+        for i in range(2):
             spacer = QWidget()
             spacer.setObjectName("spacer")
             spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             tb.addWidget(spacer)
-            if _ == 0:
-                self.doc_label = QLabel("ไม่มีชื่อ")
+            if i == 0:
+                self.doc_label = QLabel("Untitled")
                 self.doc_label.setObjectName("docName")
                 tb.addWidget(self.doc_label)
-        views = QToolButton()
-        views.setText("มุมมอง")
-        views.setIcon(icon("view"))
-        views.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        views.setPopupMode(QToolButton.InstantPopup)
-        vm = QMenu(views)
-        for key, label, sc in [("iso", "3 มิติ", "Ctrl+0"), ("top", "ด้านบน", "Ctrl+1"),
-                               ("front", "ด้านหน้า", "Ctrl+2"), ("right", "ด้านขวา", "Ctrl+3"),
-                               ("back", "ด้านหลัง", None), ("left", "ด้านซ้าย", None), ("bottom", "ด้านล่าง", None)]:
-            vm.addAction(self._act(label, lambda _=False, k=key: self.viewport.set_view(k), sc))
-        views.setMenu(vm)
-        tb.addWidget(views)
         tb.addAction(self.a_fit)
-        tb.addSeparator()
         exp = QToolButton()
         exp.setDefaultAction(self.a_export)
         exp.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
@@ -202,41 +258,95 @@ class MainWindow(QMainWindow):
         tb.addWidget(exp)
         self.addToolBar(Qt.TopToolBarArea, tb)
 
-    def _build_tool_rail(self):
-        rail = QToolBar("เครื่องมือ", self)
-        rail.setObjectName("toolRail")
-        rail.setMovable(False)
-        rail.setOrientation(Qt.Vertical)
-        rail.setIconSize(QSize(26, 26))
-        rail.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
-        cap = QLabel("วาด")
-        cap.setObjectName("railCaption")
-        cap.setAlignment(Qt.AlignCenter)
-        rail.addWidget(cap)
-        for key in ("select", "poly", "rect", "circle"):
-            rail.addAction(self.tool_actions[key])
-        rail.addSeparator()
-        cap = QLabel("เพิ่ม")
-        cap.setObjectName("railCaption")
-        cap.setAlignment(Qt.AlignCenter)
-        rail.addWidget(cap)
-        rail.addWidget(self._menu_button("รูปทรง", "shapes", SHAPE_MENU, "รูปทรงสำเร็จรูป: กล่อง ทรงกระบอก ..."))
-        rail.addWidget(self._menu_button("อื่นๆ", "more", MORE_MENU, "คำสั่งอื่นๆ: รูเจาะ สะท้อน ย่อขยาย ..."))
-        rail.addSeparator()
-        rail.addAction(self.a_help)
-        for b in rail.findChildren(QToolButton):
-            b.setObjectName("railButton")
-        self.addToolBar(Qt.LeftToolBarArea, rail)
+    def _panel_menu(self, entries):
+        m = QMenu(self)
+        for t in entries:
+            m.addAction(FEATURE_TYPES[t].label, lambda t=t: self.add_feature(t))
+        return m
+
+    def _build_tool_panel(self):
+        self.panel_items: dict[str, PanelItem] = {}
+        stack = QStackedWidget()
+        stack.setObjectName("toolPanel")
+
+        def page(rows):
+            w = QWidget()
+            w.setObjectName("panelPage")
+            lay = QVBoxLayout(w)
+            lay.setContentsMargins(8, 10, 8, 10)
+            lay.setSpacing(2)
+            for row in rows:
+                if row is None:
+                    line = QFrame()
+                    line.setObjectName("panelSep")
+                    line.setFixedHeight(1)
+                    lay.addSpacing(6)
+                    lay.addWidget(line)
+                    lay.addSpacing(6)
+                    continue
+                key, item, slot = row
+                if slot is not None:
+                    item.clicked.connect(slot)
+                self.panel_items[key] = item
+                lay.addWidget(item)
+            lay.addStretch(1)
+            return w
+
+        model_rows = [
+            ("m_sketch", PanelItem("sketch", "Sketch", "K", "Double-click a face"), self.start_sketch),
+            ("m_insert", PanelItem("plus", "Insert", "", "Box, cylinder, text…", self._panel_menu(INSERT_MENU)),
+             None),
+            ("m_tools", PanelItem("tools", "Tools", "", "Hole, shell, mirror…", self._panel_menu(TOOLS_MENU)),
+             None),
+            None,
+            ("m_select", PanelItem("select", "Select", "V"), lambda: self.viewport.set_tool("select")),
+            ("m_fit", PanelItem("fit", "Fit View", "F"), self.viewport.fit),
+            None,
+            ("m_help", PanelItem("help", "Quick Guide", "F1"), self.show_help),
+        ]
+        sketch_rows = [
+            ("s_exit", PanelItem("close", "Exit Sketching", "Esc"), self.viewport.exit_sketch),
+            None,
+            ("select", PanelItem("select", "Select", "V"), lambda: self.viewport.set_tool("select")),
+            ("line", PanelItem("line", "Line", "L"), lambda: self.viewport.set_tool("line")),
+            ("rect", PanelItem("rect", "Rectangle", "R", "Corner to corner"), lambda: self.viewport.set_tool("rect")),
+            ("circle", PanelItem("circle", "Circle", "C", "Center and diameter"),
+             lambda: self.viewport.set_tool("circle")),
+            ("polygon", PanelItem("polygon", "Polygon", "G", "Hexagon"), lambda: self.viewport.set_tool("polygon")),
+            ("slot", PanelItem("slot", "Slot", "S", "Center to center"), lambda: self.viewport.set_tool("slot")),
+            None,
+            ("s_delete", PanelItem("trash", "Delete", "Del"), self.delete_selected_shapes),
+        ]
+        stack.addWidget(page(model_rows))
+        stack.addWidget(page(sketch_rows))
+        stack.setFixedWidth(208)
+        self.tool_stack = stack
+        return stack
 
     def _build_center(self):
         center = QWidget()
-        lay = QVBoxLayout(center)
+        outer = QHBoxLayout(center)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.addWidget(self._build_tool_panel())
+        col = QWidget()
+        lay = QVBoxLayout(col)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
+        strip = QFrame()
+        strip.setObjectName("hintStrip")
+        sl = QHBoxLayout(strip)
+        sl.setContentsMargins(12, 8, 12, 8)
+        sl.addStretch(1)
         self.hint = QLabel()
         self.hint.setObjectName("hintBar")
         self.hint.setWordWrap(True)
-        lay.addWidget(self.hint)
+        self.hint.setAlignment(Qt.AlignCenter)
+        self.hint.setMaximumWidth(820)
+        self.hint.setMinimumWidth(560)
+        sl.addWidget(self.hint)
+        sl.addStretch(1)
+        lay.addWidget(strip)
         lay.addWidget(self.viewport, 1)
         self.context = QFrame()
         self.context.setObjectName("contextBar")
@@ -244,10 +354,11 @@ class MainWindow(QMainWindow):
         self.context_lay.setContentsMargins(14, 8, 14, 8)
         self.context_lay.setSpacing(8)
         lay.addWidget(self.context)
+        outer.addWidget(col, 1)
         self.setCentralWidget(center)
 
     def _build_side_dock(self):
-        dock = QDockWidget("ประวัติการสร้าง", self)
+        dock = QDockWidget("History", self)
         dock.setObjectName("sideDock")
         dock.setFeatures(QDockWidget.DockWidgetMovable)
         split = QSplitter(Qt.Vertical)
@@ -260,10 +371,10 @@ class MainWindow(QMainWindow):
         self.history.itemClicked.connect(lambda _: self._history_clicked())
         tl.addWidget(self.history, 1)
         row = QHBoxLayout()
-        for label, slot, tip in [("▲", lambda: self.move_selected(-1), "เลื่อนขึ้น"),
-                                 ("▼", lambda: self.move_selected(1), "เลื่อนลง"),
-                                 ("คัดลอก", self.duplicate_selected, "คัดลอกขั้นตอน"),
-                                 ("ลบ", self.delete_history_item, "ลบขั้นตอน")]:
+        for label, slot, tip in [("▲", lambda: self.move_selected(-1), "Move up"),
+                                 ("▼", lambda: self.move_selected(1), "Move down"),
+                                 ("Duplicate", self.duplicate_selected, "Duplicate step"),
+                                 ("Delete", self.delete_history_item, "Delete step")]:
             b = QPushButton(label)
             b.setToolTip(tip)
             b.clicked.connect(slot)
@@ -276,7 +387,7 @@ class MainWindow(QMainWindow):
         split.addWidget(self.props)
         split.setSizes([300, 500])
         dock.setWidget(split)
-        dock.setMinimumWidth(330)
+        dock.setMinimumWidth(320)
         self.addDockWidget(Qt.RightDockWidgetArea, dock)
 
     def _build_status(self):
@@ -286,26 +397,27 @@ class MainWindow(QMainWindow):
         self.material = QComboBox()
         self.material.addItems(list(MATERIALS))
         self.material.currentTextChanged.connect(lambda _: self.update_info())
-        sb.addPermanentWidget(QLabel("วัสดุ:"))
+        sb.addPermanentWidget(QLabel("Material"))
         sb.addPermanentWidget(self.material)
         self.bed_combo = QComboBox()
         for label in ["220×220", "256×256", "180×180", "300×300", "350×350"]:
             self.bed_combo.addItem(label)
         self.bed_combo.currentTextChanged.connect(self.on_bed_changed)
-        sb.addPermanentWidget(QLabel("ฐานพิมพ์:"))
+        sb.addPermanentWidget(QLabel("Bed"))
         sb.addPermanentWidget(self.bed_combo)
         self.snap_combo = QComboBox()
-        for v in ["1", "0.5", "0.1", "5", "10"]:
+        self.snap_combo.addItem("Grid (auto)", 0.0)
+        for v in ["0.1", "0.5", "1", "5", "10"]:
             self.snap_combo.addItem(f"{v} mm", float(v))
         self.snap_combo.currentIndexChanged.connect(
             lambda i: setattr(self.viewport, "snap", self.snap_combo.itemData(i)))
-        sb.addPermanentWidget(QLabel("กริดดูด:"))
+        sb.addPermanentWidget(QLabel("Snap"))
         sb.addPermanentWidget(self.snap_combo)
 
     def set_hint(self, text):
         self.hint.setText(text)
 
-    # ------------------------------------------------------- context bar
+    # ------------------------------------------------------- command bar
     def _clear_context(self):
         while self.context_lay.count():
             it = self.context_lay.takeAt(0)
@@ -330,8 +442,7 @@ class MainWindow(QMainWindow):
         return b
 
     def _cspin(self, label, value, suffix=" mm", mn=-10000.0, mx=10000.0, step=1.0):
-        lab = QLabel(label)
-        self.context_lay.addWidget(lab)
+        self.context_lay.addWidget(QLabel(label))
         sp = QDoubleSpinBox()
         sp.setRange(mn, mx)
         sp.setDecimals(2)
@@ -347,79 +458,128 @@ class MainWindow(QMainWindow):
         t.setObjectName("contextTitle")
         self.context_lay.addWidget(t)
         line = QFrame()
-        line.setFrameShape(QFrame.VLine)
         line.setObjectName("sep")
+        line.setFixedWidth(1)
         self.context_lay.addWidget(line)
 
     def update_context(self):
         self._clear_context()
         vp = self.viewport
         sel = vp.selection
-        if vp.tool in DRAW_TOOLS:
-            names = {"circle": "วงกลม", "rect": "สี่เหลี่ยม", "poly": "เส้น/หลายเหลี่ยม"}
-            self._ctitle(f"กำลังวาด{names[vp.tool]}")
-            self.context_lay.addWidget(QLabel("กด Shift ค้างเพื่อวางละเอียด 0.1 mm"))
+        if vp.mode == "sketch":
+            where = "a face" if vp.sketch and vp.sketch.get("fid") is not None else "the bed"
+            self._ctitle(f"Sketching on {where}")
+            if vp.tool == "polygon":
+                self.context_lay.addWidget(QLabel("Sides"))
+                sides = QSpinBox()
+                sides.setRange(3, 64)
+                sides.setValue(vp.polygon_sides)
+                sides.valueChanged.connect(self._set_sides)
+                self.context_lay.addWidget(sides)
+            if sel:
+                self.context_lay.addWidget(QLabel(f"{len(sel)} selected"))
+                self._cbtn("Delete", self.delete_selected_shapes, "trash", danger=True)
+            step = vp.snap if vp.snap > 0 else vp.grid_step
             self.context_lay.addStretch(1)
-            self._cbtn("เสร็จ / เลือก (Esc)", lambda: vp.set_tool("select"), "select")
+            self.context_lay.addWidget(QLabel(f"Grid {step:g} mm · Shift = free"))
+            self._cbtn("Exit Sketching", vp.exit_sketch, "close", primary=True)
+            return
+        if vp.pending_tool:
+            self._ctitle("Pick a plane")
+            self.context_lay.addWidget(QLabel("Click a face of the model or the grid"))
+            self.context_lay.addStretch(1)
+            self._cbtn("Cancel", lambda: vp.set_tool("select"), "close")
             return
         if not sel:
-            self._ctitle("เริ่มต้น")
-            self._cbtn("วาดสี่เหลี่ยม", lambda: vp.set_tool("rect"), "rect")
-            self._cbtn("วาดวงกลม", lambda: vp.set_tool("circle"), "circle")
-            self._cbtn("กล่อง", lambda: self.add_feature("box"), "shapes")
-            self._cbtn("ทรงกระบอก", lambda: self.add_feature("cylinder"), "shapes")
+            self._ctitle("Start")
+            self._cbtn("Sketch", self.start_sketch, "sketch", primary=True)
+            self._cbtn("Box", lambda: self.add_feature("box"), "shapes")
+            self._cbtn("Cylinder", lambda: self.add_feature("cylinder"), "shapes")
             self.context_lay.addStretch(1)
-            self.context_lay.addWidget(QLabel("หรือคลิกที่หน้า/ขอบของชิ้นงานเพื่อดูคำสั่งที่ใช้ได้"))
+            self.context_lay.addWidget(QLabel("Double-click a face to sketch on it"))
             return
         kind = sel[0]["kind"]
         n = len(sel)
         if kind == "profile":
-            self._ctitle(f"รูปสเก็ตช์ {n} รูป")
-            sp = self._cspin("ระยะ", 10.0, step=1.0, mn=0.01)
-            self._cbtn("ดึงขึ้น", lambda: self.pull_profiles(sel, sp.value()), "pull", True,
-                       "เพิ่มเนื้อขึ้นจากรูปนี้")
-            self._cbtn("เจาะลง", lambda: self.pull_profiles(sel, -sp.value()), "hole", tip="ตัดเนื้อลงไปตามระยะ")
-            self._cbtn("เจาะทะลุ", lambda: self.pull_profiles(sel, -1, through=True), "hole",
-                       tip="ตัดทะลุทั้งชิ้นงาน")
+            self._ctitle(f"{n} sketch region{'s' if n > 1 else ''}")
+            sp = self._cspin("Distance", 10.0, step=1.0, mn=0.01)
+            self._cbtn("Extrude", lambda: self.pull_profiles(sel, sp.value()), "pull", True, "Add material")
+            self._cbtn("Cut", lambda: self.pull_profiles(sel, -sp.value()), "hole", tip="Cut into the body")
+            self._cbtn("Cut Through", lambda: self.pull_profiles(sel, -1, through=True), "hole",
+                       tip="Cut through the whole body")
             self.context_lay.addStretch(1)
-            self._cbtn("ลบรูป", self.delete_selected_shapes, "trash", danger=True)
+            self._cbtn("Edit Sketch", lambda: self.edit_sketch_of(sel[0]), "sketch")
+            self._cbtn("Delete", self.delete_selected_shapes, "trash", danger=True)
         elif kind == "face":
             planar = all(vp.is_planar_face(s["fid"]) for s in sel)
-            self._ctitle(f"เลือก {n} หน้า")
+            self._ctitle(f"{n} face{'s' if n > 1 else ''}")
             if vp.pull_target() is not None:
-                sp = self._cspin("ระยะ", 5.0, mn=0.01)
-                self._cbtn("ดึงออก", lambda: self.pushpull_faces(sel, sp.value()), "pull", True)
-                self._cbtn("กดเข้า", lambda: self.pushpull_faces(sel, -sp.value()), "hole")
+                sp = self._cspin("Distance", 5.0, mn=0.01)
+                self._cbtn("Pull", lambda: self.pushpull_faces(sel, sp.value()), "pull", True)
+                self._cbtn("Push", lambda: self.pushpull_faces(sel, -sp.value()), "hole")
             if planar and n == 1:
-                f = vp.faces[sel[0]["fid"]]
-                nrm = f.normal_at()
-                self._cbtn("มองตรง", lambda: vp.set_view("normal", (nrm.X, nrm.Y, nrm.Z)), "look",
-                           tip="หันกล้องมองตั้งฉากกับหน้านี้ เหมาะสำหรับวาดสเก็ตช์")
-            self._cbtn("ทำให้กลวง", lambda: self.shell_faces(sel), "shell", tip="คว้านด้านในโดยเปิดหน้าที่เลือก")
-            rb = self._cbtn("ลบมุมขอบหน้า ▾", lambda: None, "fillet", tip="ลบมุมทุกขอบรอบหน้าที่เลือก")
+                self._cbtn("Sketch Here", lambda: self.sketch_on_face(sel[0]), "sketch")
+            self._cbtn("Shell", lambda: self.shell_faces(sel), "shell", tip="Hollow the body, leaving this face open")
+            rb = self._cbtn("Round Edges ▾", lambda: None, "fillet", tip="Fillet or chamfer every edge of the face")
             m = QMenu(rb)
             for r in (0.5, 1, 2, 3, 5):
-                m.addAction(f"โค้ง R{r:g} mm", lambda r=r: self.round_face_edges(sel, r, "fillet"))
+                m.addAction(f"Fillet {r:g} mm", lambda r=r: self.round_face_edges(sel, r, "fillet"))
             m.addSeparator()
             for r in (0.5, 1, 2):
-                m.addAction(f"เฉียง {r:g} mm", lambda r=r: self.round_face_edges(sel, r, "chamfer"))
+                m.addAction(f"Chamfer {r:g} mm", lambda r=r: self.round_face_edges(sel, r, "chamfer"))
             rb.setMenu(m)
             self.context_lay.addStretch(1)
         elif kind == "edge":
-            self._ctitle(f"เลือก {n} ขอบ")
-            r = self._cspin("รัศมี/ระยะ", 2.0, mn=0.01, step=0.5)
-            self._cbtn("ลบมุมโค้ง", lambda: self.round_edges(sel, r.value(), "fillet"), "fillet", True)
-            self._cbtn("ลบมุมเฉียง", lambda: self.round_edges(sel, r.value(), "chamfer"), "chamfer")
+            self._ctitle(f"{n} edge{'s' if n > 1 else ''}")
+            r = self._cspin("Size", 2.0, mn=0.01, step=0.5)
+            self._cbtn("Fillet", lambda: self.round_edges(sel, r.value(), "fillet"), "fillet", True)
+            self._cbtn("Chamfer", lambda: self.round_edges(sel, r.value(), "chamfer"), "chamfer")
             self.context_lay.addStretch(1)
-        self._cbtn("✕", vp.clear_selection, tip="ยกเลิกการเลือก (Esc)")
+        self._cbtn("✕", vp.clear_selection, tip="Clear selection (Esc)")
+
+    def _set_sides(self, n):
+        self.viewport.polygon_sides = n
+        if "polygon" in self.panel_items:
+            names = {3: "Triangle", 4: "Square", 5: "Pentagon", 6: "Hexagon", 8: "Octagon"}
+            self.panel_items["polygon"].set_sub(names.get(n, f"{n} sides"))
 
     def on_tool_changed(self, tool):
-        a = self.tool_actions.get(tool)
-        if a is not None and not a.isChecked():
-            a.setChecked(True)
+        active = self.viewport.pending_tool or tool
+        for key, item in self.panel_items.items():
+            if key in SKETCH_TOOLS or key == "select":
+                item.set_checked(key == active)
+        if "m_sketch" in self.panel_items:
+            self.panel_items["m_sketch"].set_checked(bool(self.viewport.pending_tool))
+        self.update_context()
+
+    def on_mode_changed(self, mode):
+        self.tool_stack.setCurrentIndex(1 if mode == "sketch" else 0)
+        if mode == "sketch":
+            self._session_shapes = []
+        self._show(keep_selection=False)
+        if mode == "model" and self._session_shapes:
+            # hand the regions you just drew straight to the extrude arrow
+            vis = {(p["uid"], p["idx"]) for p in self.viewport.profiles if p["face"] is not None}
+            items = [{"kind": "profile", "uid": u, "idx": i} for u, i in self._session_shapes if (u, i) in vis]
+            uids = {it["uid"] for it in items}
+            if items and len(uids) == 1:
+                self.viewport.select_items(items)
         self.update_context()
 
     # ------------------------------------------------------- operations
+    def start_sketch(self):
+        self.viewport.set_tool("line")
+
+    def sketch_on_face(self, item):
+        f = self.viewport.faces[item["fid"]]
+        c, n = f.center(), f.normal_at()
+        self.viewport.enter_sketch((c.X, c.Y, c.Z), (n.X, n.Y, n.Z), item["fid"])
+
+    def edit_sketch_of(self, item):
+        pr = self.viewport.profile_entry(item)
+        if pr is not None:
+            self.viewport.enter_sketch(pr["plane"][0], pr["plane"][3], None, tool="select")
+
     def _added(self, feature):
         self._show_tool = False
         self.refresh_history(self.doc.features.index(feature))
@@ -432,7 +592,7 @@ class MainWindow(QMainWindow):
         self.doc.checkpoint()
         last = None
         for uid, idxs in by_sketch.items():
-            name = "ดึงขึ้น" if distance > 0 and not through else ("เจาะทะลุ" if through else "เจาะ")
+            name = "Extrude" if distance > 0 and not through else ("Cut Through" if through else "Cut")
             last = self.doc.add("pull", checkpoint=False, sketch=uid, shapes=sorted(idxs),
                                 distance=float(distance), through=through)
             last.name = self.doc.unique_name(name)
@@ -441,7 +601,7 @@ class MainWindow(QMainWindow):
     def pushpull_faces(self, sel, distance):
         refs = [face_ref(self.viewport.faces[s["fid"]], s.get("point")) for s in sel]
         f = self.doc.add("pushpull", face_refs=refs, distance=float(distance))
-        f.name = self.doc.unique_name("ดึงหน้า" if distance > 0 else "กดหน้า")
+        f.name = self.doc.unique_name("Pull Face" if distance > 0 else "Push Face")
         self._added(f)
 
     def on_pull_dragged(self, sel, distance):
@@ -473,11 +633,13 @@ class MainWindow(QMainWindow):
 
     def on_shape_drawn(self, plane, shape):
         sk, idx = self.doc.add_sketch_shape(plane, shape)
+        if shape["kind"] != "path":
+            self._session_shapes.append((sk.uid, idx))
         self._show_tool = False
         self.refresh_history(self.doc.features.index(sk))
         self.regenerate()
-        self.viewport.set_tool("select")
-        self.viewport.select_items([{"kind": "profile", "uid": sk.uid, "idx": idx}])
+        if self.viewport.mode != "sketch":
+            self.viewport.select_items([{"kind": "profile", "uid": sk.uid, "idx": idx}])
 
     def delete_selected_shapes(self):
         sel = [s for s in self.viewport.selection if s["kind"] == "profile"]
@@ -538,7 +700,7 @@ class MainWindow(QMainWindow):
                 item.setToolTip(f"⚠ {f.error}")
             else:
                 item.setForeground(Qt.gray if not f.enabled else self.history.palette().text().color())
-                item.setToolTip("ติ๊กออกเพื่อปิดขั้นตอนชั่วคราว")
+                item.setToolTip("Untick to turn this step off temporarily")
         self.history.blockSignals(False)
 
     def _history_clicked(self):
@@ -588,10 +750,12 @@ class MainWindow(QMainWindow):
         self.update_title()
 
     def delete_selected(self):
-        if self.focusWidget() is self.history or not self.viewport.selection:
-            self.delete_history_item()
-        elif self.viewport.selection[0]["kind"] == "profile":
+        vp = self.viewport
+        if vp.selection and vp.selection[0]["kind"] == "profile" and self.focusWidget() is not self.history:
             self.delete_selected_shapes()
+        elif self.focusWidget() is self.history or not vp.selection:
+            if vp.mode != "sketch":
+                self.delete_history_item()
 
     def delete_history_item(self):
         i = self.current_index()
@@ -646,11 +810,12 @@ class MainWindow(QMainWindow):
     def _visible_profiles(self):
         used = self.doc.consumed_shapes()
         cur = self.current_feature()
+        sketching = self.viewport.mode == "sketch"
         out = []
         for f in self.doc.features:
             if f.type_id != "sketch" or not f.enabled:
                 continue
-            show_all = self._show_tool and cur is f
+            show_all = sketching or (self._show_tool and cur is f)
             for i, s in enumerate(f.params["shapes"]):
                 if show_all or (f.uid, i) not in used:
                     out.append({"uid": f.uid, "idx": i, "origin": f.params["origin"],
@@ -660,7 +825,7 @@ class MainWindow(QMainWindow):
     def _show(self, keep_selection=False):
         i = self.current_index()
         tool, mode = None, "add"
-        if self._show_tool and 0 <= i < len(self.tools):
+        if self._show_tool and 0 <= i < len(self.tools) and self.viewport.mode == "model":
             f = self.doc.features[i]
             tool = self.tools[i]
             mode = f.params.get("mode", "add")
@@ -671,7 +836,7 @@ class MainWindow(QMainWindow):
         self.viewport.set_scene(self.part, self._visible_profiles(), tool, mode, keep_selection)
 
     def update_title(self):
-        name = os.path.basename(self.doc.path) if self.doc.path else "ไม่มีชื่อ"
+        name = os.path.basename(self.doc.path) if self.doc.path else "Untitled"
         self.setWindowTitle(f"{'● ' if self.doc.dirty else ''}{name} — {APP_NAME}")
         if hasattr(self, "doc_label"):
             self.doc_label.setText(("● " if self.doc.dirty else "") + name)
@@ -679,16 +844,15 @@ class MainWindow(QMainWindow):
     def update_info(self):
         info = part_info(self.part, self.material.currentText())
         if info is None:
-            self.info_label.setText("ยังไม่มีชิ้นงาน")
+            self.info_label.setText("No body yet")
             return
         x, y, z = info["size"]
-        txt = (f"ขนาด {x:.1f} × {y:.1f} × {z:.1f} mm  ·  ปริมาตร {info['volume_cm3']:.2f} cm³  ·  "
-               f"≈ {info['weight_g']:.1f} g")
+        txt = (f"{x:.1f} × {y:.1f} × {z:.1f} mm   {info['volume_cm3']:.2f} cm³   ≈ {info['weight_g']:.1f} g")
         if info["min"][2] < -0.01:
-            txt += "  ·  ⚠ มีส่วนต่ำกว่าฐาน"
+            txt += "   ⚠ below the bed"
         bw, bd = self.viewport.bed_size
         if x > bw or y > bd:
-            txt += "  ·  ⚠ ใหญ่กว่าฐานพิมพ์"
+            txt += "   ⚠ larger than the bed"
         self.info_label.setText(txt)
 
     # ------------------------------------------------------------ view
@@ -708,7 +872,7 @@ class MainWindow(QMainWindow):
     def _confirm_discard(self) -> bool:
         if not self.doc.dirty or not self.doc.features:
             return True
-        r = QMessageBox.question(self, APP_NAME, "มีการแก้ไขที่ยังไม่ได้บันทึก ต้องการบันทึกก่อนไหม?",
+        r = QMessageBox.question(self, APP_NAME, "Save changes to this project before closing it?",
                                  QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
         if r == QMessageBox.Save:
             return self.file_save()
@@ -720,6 +884,7 @@ class MainWindow(QMainWindow):
     def file_new(self):
         if not self._confirm_discard():
             return
+        self.viewport.exit_sketch()
         self.doc = Document()
         self.viewport._has_fit = False
         self.refresh_history(0)
@@ -729,15 +894,16 @@ class MainWindow(QMainWindow):
         if not self._confirm_discard():
             return
         if not path:
-            path, _ = QFileDialog.getOpenFileName(self, "เปิดโปรเจกต์", self._last_dir(), FILE_FILTER)
+            path, _ = QFileDialog.getOpenFileName(self, "Open Project", self._last_dir(), FILE_FILTER)
         if not path:
             return
         try:
             doc = Document()
             doc.load(path)
         except Exception as exc:
-            QMessageBox.critical(self, APP_NAME, f"เปิดไฟล์ไม่ได้:\n{exc}")
+            QMessageBox.critical(self, APP_NAME, f"Couldn't open the file:\n{exc}")
             return
+        self.viewport.exit_sketch()
         self.settings.setValue("lastDir", os.path.dirname(path))
         self.doc = doc
         self.viewport._has_fit = False
@@ -749,11 +915,11 @@ class MainWindow(QMainWindow):
             return self.file_save_as()
         self.doc.save(self.doc.path)
         self.update_title()
-        self.statusBar().showMessage(f"บันทึกแล้ว: {self.doc.path}", 4000)
+        self.statusBar().showMessage(f"Saved {self.doc.path}", 4000)
         return True
 
     def file_save_as(self) -> bool:
-        path, _ = QFileDialog.getSaveFileName(self, "บันทึกโปรเจกต์", self._last_dir(), FILE_FILTER)
+        path, _ = QFileDialog.getSaveFileName(self, "Save Project", self._last_dir(), FILE_FILTER)
         if not path:
             return False
         if not path.lower().endswith(".3dmk"):
@@ -764,11 +930,11 @@ class MainWindow(QMainWindow):
 
     def file_export(self):
         if self.part is None:
-            QMessageBox.information(self, APP_NAME, "ยังไม่มีชิ้นงานให้ส่งออก")
+            QMessageBox.information(self, APP_NAME, "There's nothing to export yet. Extrude a sketch first.")
             return
         base = os.path.splitext(os.path.basename(self.doc.path))[0] if self.doc.path else "model"
         filters = ";;".join(FORMATS.values())
-        path, chosen = QFileDialog.getSaveFileName(self, "ส่งออก", os.path.join(self._last_dir(), base + ".stl"),
+        path, chosen = QFileDialog.getSaveFileName(self, "Export", os.path.join(self._last_dir(), base + ".stl"),
                                                    filters)
         if not path:
             return
@@ -780,12 +946,12 @@ class MainWindow(QMainWindow):
             QApplication.setOverrideCursor(Qt.WaitCursor)
             export_part(self.part, path)
         except Exception as exc:
-            QMessageBox.critical(self, APP_NAME, f"ส่งออกไม่สำเร็จ:\n{exc}")
+            QMessageBox.critical(self, APP_NAME, f"Export failed:\n{exc}")
             return
         finally:
             QApplication.restoreOverrideCursor()
         self.settings.setValue("lastDir", os.path.dirname(path))
-        self.statusBar().showMessage(f"ส่งออกแล้ว: {path}", 6000)
+        self.statusBar().showMessage(f"Exported {path}", 6000)
 
     def open_log_folder(self):
         from PySide6.QtCore import QUrl
@@ -796,7 +962,7 @@ class MainWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(LOG_DIR))
 
     def show_help(self):
-        QMessageBox.information(self, "วิธีใช้", HELP_TEXT)
+        QMessageBox.information(self, "Quick Guide", HELP_TEXT)
 
     def closeEvent(self, event):  # noqa: N802
         if self._confirm_discard():
@@ -806,19 +972,20 @@ class MainWindow(QMainWindow):
             event.ignore()
 
 
-HELP_TEXT = """<h3>ทำงานแบบ “เลือกก่อน แล้วค่อยสั่ง”</h3>
-<b>สร้างชิ้นงานจากสเก็ตช์</b><br>
-1. กด <b>สี่เหลี่ยม</b> (R) หรือ <b>วงกลม</b> (C) ทางซ้าย<br>
-2. คลิกบนฐานพิมพ์ (หรือบนหน้าของชิ้นงาน) แล้วคลิกอีกครั้งเพื่อกำหนดขนาด
-   หรือพิมพ์ตัวเลขแล้วกด Enter<br>
-3. รูปที่วาดจะถูกเลือกไว้ — <b>ลากลูกศรสีน้ำเงิน</b> ขึ้นเพื่อดึงเป็นชิ้นงาน<br><br>
-<b>เจาะรู</b><br>
-กด <b>วงกลม</b> → คลิกบนหน้าของชิ้นงาน → พิมพ์ขนาด เช่น 5 แล้ว Enter →
-ลากลูกศร <b>ลง</b> หรือกด <b>เจาะทะลุ</b> ที่แถบล่าง<br><br>
-<b>คลิกหน้า</b> → ลากลูกศรเพื่อดึง/กดหน้า, ทำให้กลวง, ลบมุมขอบหน้า<br>
-<b>คลิกขอบ</b> → ลบมุมโค้ง / ลบมุมเฉียง (Shift+คลิกเลือกหลายขอบ)<br><br>
-<b>เมาส์</b>: คลิกซ้าย = เลือก/วาด · คลิกขวาค้างลาก = หมุน · ปุ่มกลาง = เลื่อน · ล้อ = ซูมตรงเคอร์เซอร์<br>
-ใช้ปากกาบนแท็บเล็ต/จอสัมผัส Windows ได้เหมือนเมาส์ซ้าย (ปุ่มข้างปากกา = คลิกขวา)<br>
-<b>คีย์ลัด</b>: V เลือก · L เส้น · R สี่เหลี่ยม · C วงกลม · Esc ยกเลิก · Ctrl+Z ย้อน · Ctrl+Y ทำซ้ำ · F พอดีจอ<br><br>
-แก้ค่าย้อนหลังได้ทุกขั้นตอนใน <b>ประวัติการสร้าง</b> ทางขวา
+HELP_TEXT = """<h3>Select something, then act on it</h3>
+<b>Make a part</b><br>
+1. Double-click the grid (or a face of your model) to start sketching on it.<br>
+2. Draw with Line (L), Rectangle (R), Circle (C), Polygon (G) or Slot (S).
+   Type a number while drawing to set the size exactly, then press Enter.<br>
+3. Press Esc or Exit Sketching. Your shapes stay selected —
+   <b>drag the blue arrow</b> up to extrude, or down to cut.<br><br>
+<b>Drill a hole</b>: double-click a face → Circle (C) → click the center → type 5 → Enter →
+Exit Sketching → <b>Cut Through</b>.<br><br>
+<b>Snapping</b>: the cursor snaps to corners, midpoints and centers (purple), to lines and
+horizontal/vertical alignments (blue), and to the grid. Hold Shift for free placement.<br><br>
+<b>Mouse</b>: left = select / draw · right-drag = orbit · middle-drag = pan · wheel = zoom ·
+right-click = cancel. A pen works as the left button; its barrel button orbits.<br>
+<b>Keys</b>: V select · L R C G S tools · K sketch · Esc back · Del delete · Ctrl+Z / Ctrl+Y ·
+F fit view<br><br>
+Every step is listed in <b>History</b> on the right; click one to change its numbers.
 """

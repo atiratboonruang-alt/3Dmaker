@@ -149,3 +149,19 @@ def test_add_shape_merges_coplanar_and_delete_fixes_pulls():
     assert pull.params["shapes"] == [0]
     part, _ = rebuild(doc.features)
     assert pull.error is None
+
+
+def test_slot_ngon_and_open_path():
+    box, sk = _box_top_sketch([{"kind": "slot", "c1": [-5, 0], "c2": [5, 0], "w": 4},
+                               {"kind": "ngon", "c": [10, 10], "r": 3, "n": 6},
+                               {"kind": "path", "pts": [[-15, -15], [15, -15]]}])
+    cut = Feature.new("pull", sketch=sk.uid, shapes=[0, 1], distance=-2)
+    full, _ = rebuild([box])
+    part, _ = rebuild([box, sk, cut])
+    assert sk.error is None and cut.error is None, (sk.error, cut.error)
+    slot_area = 10 * 4 + 3.14159265 * 4
+    hex_area = 1.5 * 3 ** 0.5 * 9
+    assert part.volume == pytest.approx(full.volume - 2 * (slot_area + hex_area), rel=1e-4)
+    bad = Feature.new("pull", sketch=sk.uid, shapes=[2], distance=-2)
+    rebuild([box, sk, bad])
+    assert bad.error

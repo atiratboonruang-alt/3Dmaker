@@ -28,9 +28,9 @@ def _install_excepthook():
         shown.add(key)
         try:
             from PySide6.QtWidgets import QMessageBox
-            QMessageBox.warning(None, "3D Maker — เกิดข้อผิดพลาด",
-                                f"{exc_type.__name__}: {exc}\n\nบันทึกรายละเอียดไว้ที่\n{LOG_FILE}\n"
-                                "ส่งไฟล์นี้ให้ผู้พัฒนาเพื่อช่วยแก้ไขได้")
+            QMessageBox.warning(None, "3D Maker — something went wrong",
+                                f"{exc_type.__name__}: {exc}\n\nDetails were saved to\n{LOG_FILE}\n"
+                                "Send this file to the developer to get it fixed.")
         except Exception:
             pass
 

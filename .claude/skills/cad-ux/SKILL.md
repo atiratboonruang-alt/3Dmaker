@@ -1,13 +1,28 @@
 ---
 name: cad-ux
-description: UX/UI rules for the 3D Maker desktop CAD app (PySide6 + PyVista + build123d), modelled on Shapr3D. Use whenever changing anything the user sees or touches in maker3d/gui — viewport mouse/keyboard/pen input, selection and hover, sketch drawing, drag-to-pull, the context (command) bar, hint text, theme, icons or Thai wording — and before saying a UI change works.
+description: UX/UI rules for the 3D Maker desktop CAD app (PySide6 + PyVista + build123d), a direct-modelling app in the style of Shapr3D. Use whenever changing anything the user sees or touches in maker3d/gui — viewport mouse/keyboard/pen input, Modeling/Sketching modes, selection and hover, sketch tools and snapping, drag-to-extrude, the tool panel, command bar, instruction text, theme, icons or wording — and before saying a UI change works.
 ---
 
 # 3D Maker UX rules
 
-3D Maker is a Thai-language CAD app for people who 3D print, built to feel like Shapr3D on a
-Windows PC with a mouse (or a pen on a Windows tablet). The users are new to CAD. Every UI
-change must keep these rules and must be tested with real Qt input before it is called done.
+3D Maker is a CAD app for people who 3D print, built to feel like Shapr3D on a Windows PC with
+a mouse (or a pen on a Windows tablet). The owner is Thai but wants **all UI text in English**
+(talk to them in Thai). Users are new to CAD. Every UI change must keep these rules and must be
+tested with real Qt input before it is called done. Follow the workflow, not the branding: draw
+our own icons, never copy another app's logo, artwork or name.
+
+## Two modes
+
+- **Modeling**: select faces, edges and sketch regions; drag the arrow to extrude/cut. Left
+  panel: Sketch (K), Insert ▸, Tools ▸, Select, Fit View, Quick Guide.
+- **Sketching**: entered by double-clicking a planar face (or the bed / a region), by the Sketch
+  item, or by a sketch tool key then clicking a plane. The camera animates (~300 ms, time-based)
+  to look straight at the plane, switches to orthographic, and a grid + red (u) / blue (v) axes
+  appear. Left panel: Exit Sketching (Esc), Select (V), Line (L), Rectangle (R), Circle (C),
+  Polygon (G), Slot (S), Delete. Tools stay active after each shape. Esc cancels the last line
+  segment → leaves the tool → exits sketching. Double-click another face to move there; double-click
+  empty space to exit. On exit, the closed regions you just drew are selected, so the next move
+  is dragging the arrow.
 
 ## Interaction model: select first, then act
 
@@ -15,11 +30,12 @@ change must keep these rules and must be tested with real Qt input before it is 
   adds or removes. One kind of thing is selected at a time: faces, edges, or sketch profiles.
 - The dark command bar under the viewport (`contextBar`) shows only actions that apply to the
   current selection. Nothing selected → it offers ways to start (draw rectangle, draw circle, box).
-- The coach line above the viewport (`hintBar`) always says the next step in one sentence, in
-  plain Thai, with keys shown as chips. Update `HINTS` in `viewport.py` when behaviour changes.
-- A drawn shape is auto-selected and the tool returns to Select, so the next move is to drag the
-  arrow. A pullable selection always shows the blue arrow; dragging it previews in green (add) or
-  red (cut) with the distance next to the cursor, and commits on release.
+- The instruction box centred above the viewport (`hintBar`) always says the next step, in plain
+  English sentence case, with keys as chips (“Place the line's endpoints. To finish, press Enter.”).
+  Update `HINTS` in `viewport.py` when behaviour changes.
+- A pullable selection always shows the blue arrow; dragging it previews in green (add) or red
+  (cut) with the distance next to the cursor, and commits on release. A plain click (no drag) on
+  one of several selected items selects just that one.
 - Every action is undoable (`Document.checkpoint()` before any change) and shows up in history.
 
 ## Mouse, keyboard, pen (Shapr3D on Windows defaults)
@@ -33,7 +49,7 @@ change must keep these rules and must be tested with real Qt input before it is 
 | Middle drag, Shift+right drag | pan |
 | Wheel | zoom towards the cursor |
 | Double click (line tool) | close the polygon |
-| V L R C | Select, Line, Rectangle, Circle · Esc cancels · typing digits while drawing sets size |
+| V L R C G S K | Select, Line, Rectangle, Circle, Polygon, Slot, Sketch · Esc back · typing digits while drawing sets the size |
 
 - All pointer input is handled in Qt (`mousePressEvent` etc. in `Viewport`). VTK gets no mouse
   events and its interactor style is `vtkInteractorStyleUser`. Never route input through VTK
@@ -46,27 +62,37 @@ change must keep these rules and must be tested with real Qt input before it is 
 - Pen on Windows arrives as mouse events (tip = left, barrel button = right). Keep every gesture
   reachable with those two plus the keyboard.
 
-## Drawing on faces
+## Snapping while sketching (`Viewport._snap`)
 
-- The sketch plane is the planar face under the first click, otherwise the print bed (Z=0).
-- Snap order: point snaps (face centre, corners, edge midpoints, hole centres, coplanar sketch
-  points; within 12 px, marker turns green) → grid (`snap`, default 1 mm) → Shift = 0.1 mm free.
-- Typed sizes: circle = diameter, rectangle = `w,h`. Show live size next to the cursor.
-  VTK text has no Thai glyphs: labels drawn in the viewport must be ASCII (numbers, mm, D, x).
+1. Points within 12 px: plane origin, face centre, model corners/edge midpoints/hole centres on
+   the plane, vertices/midpoints/centres of coplanar sketch shapes, the line chain's own points
+   (clicking the start point closes the loop). Marker: purple.
+2. Horizontal/vertical alignment with those points within 8 px: blue guide line from the point.
+3. Onto lines within 8 px: model edges in the plane and sketch outlines. Marker: blue.
+4. Grid: step follows zoom (≥14 px per cell, 1-2-5 series) unless Snap is set in the status bar.
+5. Shift = free placement at 0.1 mm.
+All pixel tolerances are logical pixels: multiply by `_scale` (and `pixel_size()` by `_scale` to
+get mm per logical pixel) — dividing broke snapping at 150 % Windows scaling once.
+
+- Typed sizes: line = length along the cursor direction, circle = diameter, rectangle = `w,h`,
+  polygon = radius, slot = length then width. The live dimension box (`_place_label`) stays inside
+  the viewport. VTK text has no Thai glyphs: viewport labels must be ASCII.
 
 ## Visual design
 
-Tokens live in `maker3d/gui/theme.py`; do not hard-code new colours elsewhere.
+Tokens live in `maker3d/gui/theme.py` (Qt) and the top of `viewport.py` (3D colours); do not
+hard-code new colours elsewhere.
 
-- Light studio canvas (`#eef2f6`→`#cdd6e0`), white panels, ink `#17202b`.
-- Cobalt `#1f5bff` = selection and the single primary action per bar. Amber `#f2a81d` = sketches.
-  Green `#1e9e5a` = add, red `#de4a3c` = cut. Don't reuse these for anything else.
-- The dark command bar is the one bold element. Keep everything else quiet: no gradients on
-  panels, no extra shadows, no decorative labels.
-- Font: bundled IBM Plex Sans Thai (`maker3d/gui/fonts`, OFL). Sentence case, active verbs.
-  A button says what happens ("เจาะทะลุ", "ดึงขึ้น"); the history item uses the same word.
-- Errors say what failed and what to try ("ลองลดค่ารัศมี…"), shown on the history item in red
-  and in the properties panel. Unhandled exceptions go to `~/.3dmaker/3dmaker.log` and a dialog.
+- Dark studio: window `#1b1c1f`, panels `#232428`, raised controls `#2c2e33`, text `#e8e9ec`.
+  The part is light grey `#c9ccd1` so it carries the scene.
+- Cobalt `#3d8bff` = selection, the primary action per bar and the v axis. Amber `#ffb02e` =
+  sketches. Purple `#b07cff` = sketch vertices and point snaps. Green = add, red = cut / u axis.
+- Tool panel rows: square icon button, bold name, shortcut chip, grey sub-label (e.g. “Hexagon”).
+- Font: bundled IBM Plex Sans Thai (`maker3d/gui/fonts`, OFL; Latin + Thai). Sentence case,
+  active verbs. A button says what happens (“Cut Through”, “Extrude”); the history item uses the
+  same word.
+- Errors say what failed and what to try (“Try a smaller radius…”), shown on the history item in
+  red and in the properties panel. Unhandled exceptions go to `~/.3dmaker/3dmaker.log` + a dialog.
 
 ## Definition of done for any UI change
 
