@@ -33,6 +33,9 @@ our own icons, never copy another app's logo, artwork or name.
 - The instruction box centred above the viewport (`hintBar`) always says the next step, in plain
   English sentence case, with keys as chips (“Place the line's endpoints. To finish, press Enter.”).
   Update `HINTS` in `viewport.py` when behaviour changes.
+- Selected edges show a round handle on the last edge, pointing out along the bisector of its two
+  faces. Dragging it previews the fillet live (`R 2.0 mm`, 0.5 mm steps, Shift 0.1 mm; red label
+  when too large, last valid radius is kept) and commits a Fillet on release.
 - A pullable selection always shows the blue arrow; dragging it previews in green (add) or red
   (cut) with the distance next to the cursor, and commits on release. A plain click (no drag) on
   one of several selected items selects just that one.

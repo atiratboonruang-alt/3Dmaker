@@ -284,8 +284,22 @@ pt = to_qt((m.X, m.Y, m.Z))
 move(pt)
 check("hover finds the edge", vp.hover and vp.hover["kind"] == "edge", vp.hover)
 click(pt)
-check("fillet the edge", button("Fillet") and w.doc.features[-1].type_id == "fillet"
-      and w.doc.features[-1].error is None, w.doc.features[-1].error)
+check("edge selection shows the round handle", vp._arrow is not None and vp._arrow_kind == "round")
+shot("08b_edge_handle")
+anchor, n, L = vp._arrow
+a_ = to_qt(anchor + n * L * 0.6)
+b_ = to_qt(anchor + n * (L * 0.6 + 2.0))
+move(a_)
+send("press", a_, Qt.LeftButton, Qt.LeftButton)
+for i in range(1, 9):
+    t = i / 8
+    send("move", QPointF(a_.x() + (b_.x() - a_.x()) * t, a_.y() + (b_.y() - a_.y()) * t), Qt.NoButton, Qt.LeftButton)
+check("live preview while dragging", len(vp._preview_actors) > 0 and not vp._part_actor.GetVisibility())
+shot("08c_round_drag")
+send("release", b_, Qt.LeftButton, Qt.NoButton)
+last = w.doc.features[-1]
+check("drag the edge handle makes a 2 mm fillet", last.type_id == "fillet" and last.error is None
+      and abs(last.params["radius"] - 2.0) < 1e-9, (last.type_id, last.params.get("radius"), last.error))
 fp0 = np.array(cam.GetFocalPoint())
 drag(QPointF(500, 400), QPointF(560, 400), Qt.MiddleButton)
 check("middle drag pans", np.linalg.norm(np.array(cam.GetFocalPoint()) - fp0) > 1)

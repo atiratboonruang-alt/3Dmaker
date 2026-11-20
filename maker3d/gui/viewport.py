@@ -18,7 +18,7 @@ import math
 
 import numpy as np
 import pyvista as pv
-from build123d import GeomType, extrude
+from build123d import GeomType, extrude, fillet
 from PySide6.QtCore import QElapsedTimer, Qt, QTimer, Signal
 from pyvistaqt import QtInteractor
 from vtkmodules.vtkInteractionStyle import vtkInteractorStyleUser
@@ -60,7 +60,8 @@ HINTS = {
     "model": f"Click a face, edge or sketch region to select it. Double-click a face to sketch on it. "
              f"Right-drag to orbit, middle-drag to pan, scroll to zoom.",
     "model_pull": f"Drag the blue arrow up to add material or down to cut. Hold {_k('Shift')} for 0.1 mm steps.",
-    "model_edge": f"Set a radius, then choose Fillet or Chamfer. {_k('Shift')}+click to add edges.",
+    "model_edge": f"Drag the arrow to round the edge, or type a size and choose Fillet or Chamfer. "
+                  f"{_k('Shift')}+click to add edges.",
     "pick_plane": f"Click a face or the grid to start sketching. {_k('Esc')} to cancel.",
     "sketch": f"Pick a tool on the left, or click a shape to select it. {_k('Delete')} removes it. "
               f"{_k('Esc')} exits sketching.",
@@ -189,6 +190,7 @@ class Viewport(QtInteractor):
     selectionChanged = Signal()
     shapeDrawn = Signal(object, object)  # plane {"origin","normal"}, shape dict
     pullDragged = Signal(object, float)  # selection items, distance
+    roundDragged = Signal(object, float)  # edge selection, fillet radius
     hintChanged = Signal(str)
     toolChanged = Signal(str)
     modeChanged = Signal(str)  # "model" | "sketch"
@@ -242,6 +244,8 @@ class Viewport(QtInteractor):
         self._press = None
         self._mode = None  # drag state: None | "orbit_left" | "orbit_right" | "pan" | "pull"
         self._pull = None
+        self._round = None
+        self._arrow_kind = "pull"
         self._snap_info = None
         self._seg_a = None
 
@@ -584,23 +588,58 @@ class Viewport(QtInteractor):
                 return np.asarray(anchor, float), n0, faces
         return None
 
+    def round_target(self):
+        """(anchor, direction, edges) when only edges are selected: the handle sits on
+        the last edge and points out along the bisector of its two faces."""
+        sel = self.selection
+        if not sel or self.mode != "model" or not all(s["kind"] == "edge" for s in sel):
+            return None
+        if self.part is None or any(s["eid"] >= len(self.edges) for s in sel):
+            return None
+        edge = self.edges[sel[-1]["eid"]]
+        mid = edge.position_at(0.5)
+        normals = []
+        for f in self.part.faces():
+            if any(e.is_same(edge) for e in f.edges()):
+                try:
+                    normals.append(_np(f.normal_at(mid)))
+                except Exception:
+                    pass
+        d = np.sum(normals, axis=0) if normals else np.zeros(3)
+        if np.linalg.norm(d) < 1e-6:  # fall back to "towards the camera"
+            cam = self.renderer.GetActiveCamera()
+            d = np.array(cam.GetPosition()) - _np(mid)
+        return _np(mid), d / np.linalg.norm(d), [self.edges[s["eid"]] for s in sel]
+
     def _update_arrow(self):
         if self._arrow_actor is not None:
             self.remove_actor(self._arrow_actor)
             self._picker.DeletePickList(self._arrow_actor)
             self._arrow_actor = None
         self._arrow = None
+        kind = "pull"
         tgt = self.pull_target() if self.tool == "select" else None
+        if tgt is None and self.tool == "select":
+            tgt = self.round_target()
+            kind = "round"
         if tgt is None:
             return
         anchor, n, _ = tgt
         length = self.pixel_size(anchor) * 70 * self._scale
-        arrow = pv.Arrow(start=anchor, direction=n, scale=length, tip_length=0.3, tip_radius=0.12,
-                         shaft_radius=0.035)
+        start = anchor + n * length * (0.15 if kind == "round" else 0.0)
+        if kind == "round":
+            arrow = pv.Arrow(start=start, direction=n, scale=length * 1.1, tip_length=0.35, tip_radius=0.17,
+                             shaft_radius=0.05)
+        else:
+            arrow = pv.Arrow(start=start, direction=n, scale=length, tip_length=0.3, tip_radius=0.12,
+                             shaft_radius=0.035)
+        if kind == "round":  # thin leader from the edge to the handle
+            arrow = arrow.merge(pv.Line(anchor, start)).extract_surface(algorithm="dataset_surface")
         self._arrow_actor = self.add_mesh(arrow, color=SELECT, reset_camera=False, ambient=0.6, diffuse=0.5,
                                           specular=0.3)
         self._picker.AddPickList(self._arrow_actor)
         self._arrow = (anchor, n, length)
+        self._arrow_kind = kind
 
     # ------------------------------------------------------------ selection
     def clear_selection(self):
@@ -785,6 +824,8 @@ class Viewport(QtInteractor):
             self.hintChanged.emit(HINTS["sketch"])
         elif self.pull_target() is not None:
             self.hintChanged.emit(HINTS["model_pull"])
+        elif self.round_target() is not None:
+            self.hintChanged.emit(HINTS["model_edge"])
         elif self.selection and self.selection[0]["kind"] == "edge":
             self.hintChanged.emit(HINTS["model_edge"])
         else:
@@ -1244,6 +1285,8 @@ class Viewport(QtInteractor):
             self._pan(dx, dy)
         elif mode == "pull":
             self._drag_pull(x, y, shift)
+        elif mode == "round":
+            self._drag_round(x, y, shift)
         elif self.mode == "sketch" and self.tool in SKETCH_TOOLS:
             self._draw_move(x, y, shift)
         elif self.mode == "sketch":
@@ -1266,6 +1309,8 @@ class Viewport(QtInteractor):
             self.escape()
         elif mode == "pull":
             self._finish_pull()
+        elif mode == "round":
+            self._finish_round()
         if mode in ("orbit_left", "orbit_right", "pan"):
             self._after_camera_move()
         ev.accept()
@@ -1323,6 +1368,9 @@ class Viewport(QtInteractor):
             return
         item = self._pick_with_handle(x, y)
         selected = item not in (None, "handle") and self._key(item) in {self._key(s) for s in self.selection}
+        if item == "handle" and getattr(self, "_arrow_kind", "pull") == "round":
+            self._start_round(x, y)
+            return
         if item == "handle" or (selected and self.pull_target() is not None and not (shift or ctrl)):
             self._start_pull(x, y, None if item == "handle" else item)
             return
@@ -1448,6 +1496,74 @@ class Viewport(QtInteractor):
         self._place_label(x, y)
         self._label.SetVisibility(True)
         self.render()
+
+    # ---------------------------------------------------- drag to fillet
+    def _start_round(self, x, y):
+        tgt = self.round_target()
+        if tgt is None or self._arrow is None:
+            return
+        anchor, n, edges = tgt
+        self._mode = "round"
+        self._round = {"t0": self._line_param(x, y, anchor, n), "anchor": anchor, "n": n, "edges": edges,
+                       "r": 0.0, "ok": 0.0, "start": np.array([x, y], float), "len": self._arrow[2]}
+        self._show_round_label(x, y, 0.0, True)
+
+    def _show_round_label(self, x, y, r, ok):
+        self._label.SetInput(f"R {r:.1f} mm" if ok else f"R {r:.1f} mm  too large")
+        self._label.GetTextProperty().SetFrameColor(*((0.24, 0.55, 1.0) if ok else (1.0, 0.35, 0.3)))
+        self._place_label(x, y)
+        self._label.SetVisibility(True)
+
+    def _drag_round(self, x, y, fine=False):
+        p = self._round
+        t = self._line_param(x, y, p["anchor"], p["n"])
+        if t is None or p["t0"] is None:
+            raw = np.linalg.norm(np.array([x, y], float) - p["start"]) * self.pixel_size(p["anchor"])
+        else:
+            raw = abs(t - p["t0"])
+        step = 0.1 if fine else 0.5
+        r = round(raw / step) * step
+        if abs(r - p["r"]) < 1e-9:
+            return
+        p["r"] = r
+        for a in self._preview_actors:
+            self.remove_actor(a)
+        self._preview_actors = []
+        ok = True
+        if r > 1e-9:
+            try:
+                rounded = fillet(p["edges"], r)
+                mesh, _, _ = tessellate(rounded, 0.05, 0.2)
+                if mesh is None:
+                    raise ValueError("empty")
+                p["ok"] = r
+                if self._part_actor is not None:
+                    self._part_actor.SetVisibility(False)
+                mesh = mesh.compute_normals(cell_normals=False, split_vertices=True, feature_angle=35)
+                self._preview_actors.append(self.add_mesh(mesh, color=PART, smooth_shading=True, ambient=0.3,
+                                                          diffuse=0.75, specular=0.2, pickable=False,
+                                                          reset_camera=False))
+            except Exception:
+                ok = False
+                if self._part_actor is not None:
+                    self._part_actor.SetVisibility(True)
+        elif self._part_actor is not None:
+            self._part_actor.SetVisibility(True)
+        self._show_round_label(x, y, r, ok)
+        self.render()
+
+    def _finish_round(self):
+        for a in self._preview_actors:
+            self.remove_actor(a)
+        self._preview_actors = []
+        if self._part_actor is not None:
+            self._part_actor.SetVisibility(True)
+        self._label.SetVisibility(False)
+        self._label.GetTextProperty().SetFrameColor(0.24, 0.55, 1.0)
+        p, self._round = self._round, None
+        self.render()
+        if p and p["ok"] > 1e-9:
+            self.roundDragged.emit(list(self.selection), float(p["ok"]))
 
     def _finish_pull(self):
         for a in self._preview_actors:

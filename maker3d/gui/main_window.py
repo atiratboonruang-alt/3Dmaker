@@ -145,6 +145,7 @@ class MainWindow(QMainWindow):
         self.viewport.hintChanged.connect(self.set_hint)
         self.viewport.shapeDrawn.connect(self.on_shape_drawn)
         self.viewport.pullDragged.connect(self.on_pull_dragged)
+        self.viewport.roundDragged.connect(lambda sel, r: self.round_edges(sel, r, "fillet"))
         self.viewport.toolChanged.connect(self.on_tool_changed)
         self.viewport.modeChanged.connect(self.on_mode_changed)
 
