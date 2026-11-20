@@ -137,8 +137,13 @@ class MainWindow(QMainWindow):
         self.a_bed.setCheckable(True)
         self.a_bed.setChecked(True)
         m.addAction(self.a_bed)
+        self.a_ortho = self._act("มุมมองแบบขนาน (ไม่มีมุมเปอร์สเปกทีฟ)",
+                                 lambda: self.viewport.set_parallel(self.a_ortho.isChecked()), "Ctrl+P")
+        self.a_ortho.setCheckable(True)
+        m.addAction(self.a_ortho)
         m = menu.addMenu("ช่วยเหลือ")
         m.addAction(self.a_help)
+        m.addAction(self._act("เปิดโฟลเดอร์บันทึกข้อผิดพลาด", self.open_log_folder))
 
     def _menu_button(self, text, icon_name, entries, tip):
         b = QToolButton()
@@ -166,10 +171,15 @@ class MainWindow(QMainWindow):
         tb.addSeparator()
         tb.addAction(self.a_undo)
         tb.addAction(self.a_redo)
-        spacer = QWidget()
-        spacer.setObjectName("spacer")
-        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        tb.addWidget(spacer)
+        for _ in range(2):
+            spacer = QWidget()
+            spacer.setObjectName("spacer")
+            spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            tb.addWidget(spacer)
+            if _ == 0:
+                self.doc_label = QLabel("ไม่มีชื่อ")
+                self.doc_label.setObjectName("docName")
+                tb.addWidget(self.doc_label)
         views = QToolButton()
         views.setText("มุมมอง")
         views.setIcon(icon("view"))
@@ -293,7 +303,7 @@ class MainWindow(QMainWindow):
         sb.addPermanentWidget(self.snap_combo)
 
     def set_hint(self, text):
-        self.hint.setText("💡  " + text)
+        self.hint.setText(text)
 
     # ------------------------------------------------------- context bar
     def _clear_context(self):
@@ -305,12 +315,14 @@ class MainWindow(QMainWindow):
                 w.setParent(None)
                 w.deleteLater()
 
-    def _cbtn(self, text, slot, icon_name=None, primary=False, tip=None):
+    def _cbtn(self, text, slot, icon_name=None, primary=False, tip=None, danger=False):
         b = QPushButton(text)
         if icon_name:
-            b.setIcon(icon(icon_name, "#ffffff" if primary else "#2b3440"))
+            b.setIcon(icon(icon_name, "#ffffff"))
         if primary:
             b.setObjectName("primaryButton")
+        elif danger:
+            b.setObjectName("dangerButton")
         if tip:
             b.setToolTip(tip)
         b.clicked.connect(slot)
@@ -370,7 +382,7 @@ class MainWindow(QMainWindow):
             self._cbtn("เจาะทะลุ", lambda: self.pull_profiles(sel, -1, through=True), "hole",
                        tip="ตัดทะลุทั้งชิ้นงาน")
             self.context_lay.addStretch(1)
-            self._cbtn("ลบรูป", self.delete_selected_shapes, "trash")
+            self._cbtn("ลบรูป", self.delete_selected_shapes, "trash", danger=True)
         elif kind == "face":
             planar = all(vp.is_planar_face(s["fid"]) for s in sel)
             self._ctitle(f"เลือก {n} หน้า")
@@ -661,6 +673,8 @@ class MainWindow(QMainWindow):
     def update_title(self):
         name = os.path.basename(self.doc.path) if self.doc.path else "ไม่มีชื่อ"
         self.setWindowTitle(f"{'● ' if self.doc.dirty else ''}{name} — {APP_NAME}")
+        if hasattr(self, "doc_label"):
+            self.doc_label.setText(("● " if self.doc.dirty else "") + name)
 
     def update_info(self):
         info = part_info(self.part, self.material.currentText())
@@ -772,6 +786,14 @@ class MainWindow(QMainWindow):
             QApplication.restoreOverrideCursor()
         self.settings.setValue("lastDir", os.path.dirname(path))
         self.statusBar().showMessage(f"ส่งออกแล้ว: {path}", 6000)
+
+    def open_log_folder(self):
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..__main__ import LOG_DIR
+        os.makedirs(LOG_DIR, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(LOG_DIR))
 
     def show_help(self):
         QMessageBox.information(self, "วิธีใช้", HELP_TEXT)

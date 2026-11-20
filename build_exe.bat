@@ -9,6 +9,7 @@ if not exist .venv (
   --collect-all build123d --collect-all OCP ^
   --collect-all vtkmodules --collect-all pyvista --collect-all pyvistaqt ^
   --collect-all lib3mf --collect-data ezdxf ^
+  --add-data "maker3d/gui/fonts;maker3d/gui/fonts" ^
   launcher.py
 echo.
 echo Done: dist\3DMaker\3DMaker.exe

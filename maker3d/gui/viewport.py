@@ -13,38 +13,49 @@ import pyvista as pv
 from build123d import GeomType, extrude
 from PySide6.QtCore import Qt, Signal
 from pyvistaqt import QtInteractor
-from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
+from vtkmodules.vtkInteractionStyle import vtkInteractorStyleUser
 from vtkmodules.vtkRenderingCore import vtkCellPicker, vtkTextActor
 
 from ..model import make_plane, plane_axes, shape_face
 
 # --- colours (light theme, Shapr3D-like) -----------------------------------
-BG_TOP = "#f5f7fa"
-BG_BOTTOM = "#d9dee6"
-PART = "#cfd6df"
-EDGE = "#3d4652"
-HOVER = "#8db4ff"
-SELECT = "#2f6bff"
-SKETCH_FILL = "#ffb547"
-SKETCH_LINE = "#d9822b"
-ADD = "#22b35e"
-CUT = "#e5484d"
-BED_PLATE = "#e8ebf0"
-BED_GRID = "#c9d0da"
+BG_TOP = "#eef2f6"
+BG_BOTTOM = "#cdd6e0"
+PART = "#e4e8ed"
+EDGE = "#2a3440"
+HOVER = "#8fb0ff"
+SELECT = "#1f5bff"
+SKETCH_FILL = "#f2a81d"
+SKETCH_LINE = "#c98200"
+ADD = "#1e9e5a"
+CUT = "#de4a3c"
+BED_PLATE = "#dfe5ec"
+BED_GRID = "#c3ccd7"
 
 DRAW_TOOLS = ("circle", "rect", "poly")
 
+def _k(key):
+    return f'<span style="background:#e8edf3; color:#17202b;">&nbsp;{key}&nbsp;</span>'
+
+
+def _b(text):
+    return f"<b>{text}</b>"
+
+
 HINTS = {
-    "select": "คลิกหน้า ขอบ หรือรูปสเก็ตช์เพื่อเลือก (Shift = เลือกหลายอัน) · คลิกขวาค้างแล้วลาก = หมุน · "
-              "ปุ่มกลาง = เลื่อน · ล้อ = ซูม",
-    "select_pull": "ลากลูกศรสีน้ำเงิน (หรือลากหน้าที่เลือก) ขึ้น = เพิ่มเนื้อ, ลง = เจาะ · หรือกดคำสั่งแถบล่าง",
-    "select_edge": "ตั้งรัศมีแล้วกด ‘ลบมุมโค้ง’ หรือ ‘ลบมุมเฉียง’ ที่แถบล่าง · Shift+คลิกเพื่อเลือกขอบเพิ่ม",
-    "circle0": "วงกลม: คลิกบนหน้าของชิ้นงานหรือบนฐาน เพื่อวางจุดศูนย์กลาง",
-    "circle1": "เลื่อนเมาส์แล้วคลิกเพื่อกำหนดขนาด · หรือพิมพ์เส้นผ่านศูนย์กลาง แล้วกด Enter · Esc ยกเลิก",
-    "rect0": "สี่เหลี่ยม: คลิกมุมแรกบนหน้าของชิ้นงานหรือบนฐาน",
-    "rect1": "คลิกมุมตรงข้าม · หรือพิมพ์ กว้าง,ยาว (เช่น 30,20) แล้วกด Enter · Esc ยกเลิก",
-    "poly0": "หลายเหลี่ยม: คลิกวางจุดแรกบนหน้าของชิ้นงานหรือบนฐาน",
-    "poly1": "คลิกวางจุดต่อไป · คลิกจุดแรกหรือกด Enter เพื่อปิดรูป · Backspace ลบจุดล่าสุด · Esc ยกเลิก",
+    "select": f"{_b('คลิกหน้า ขอบ หรือรูปสเก็ตช์')} เพื่อเลือก · เริ่มชิ้นใหม่ด้วย {_k('R')} สี่เหลี่ยม หรือ {_k('C')} วงกลม · "
+              f"คลิกขวาค้างลาก = หมุน · ปุ่มกลาง = เลื่อน · ล้อ = ซูม",
+    "select_pull": f"{_b('ลากลูกศรสีน้ำเงิน')} ขึ้นเพื่อเพิ่มเนื้อ ลงเพื่อเจาะ · หรือใส่ระยะแล้วกดปุ่มในแถบล่าง · "
+                   f"{_k('Shift')} ลากละเอียด 0.1 mm",
+    "select_edge": f"{_b('เลือกขอบแล้ว')} ตั้งรัศมีแล้วกด ลบมุมโค้ง หรือ ลบมุมเฉียง · {_k('Shift')}+คลิกเพื่อเลือกขอบเพิ่ม",
+    "circle0": f"{_b('วงกลม')} คลิกบนหน้าของชิ้นงานหรือบนฐานเพื่อวางจุดศูนย์กลาง · จุดสีเขียว = ดูดเข้ากึ่งกลาง/มุม",
+    "circle1": f"{_b('ขยับเมาส์แล้วคลิก')} เพื่อกำหนดขนาด · หรือพิมพ์เส้นผ่านศูนย์กลาง เช่น 5 แล้วกด {_k('Enter')} · "
+               f"{_k('Esc')} ยกเลิก",
+    "rect0": f"{_b('สี่เหลี่ยม')} คลิกมุมแรกบนหน้าของชิ้นงานหรือบนฐาน · จุดสีเขียว = ดูดเข้ากึ่งกลาง/มุม",
+    "rect1": f"{_b('คลิกมุมตรงข้าม')} · หรือพิมพ์ กว้าง,ยาว เช่น 30,20 แล้วกด {_k('Enter')} · {_k('Esc')} ยกเลิก",
+    "poly0": f"{_b('เส้น')} คลิกวางจุดแรกบนหน้าของชิ้นงานหรือบนฐาน",
+    "poly1": f"{_b('คลิกวางจุดต่อไป')} · คลิกจุดแรก ดับเบิลคลิก หรือกด {_k('Enter')} เพื่อปิดรูป · "
+             f"{_k('Backspace')} ลบจุดล่าสุด · {_k('Esc')} ยกเลิก",
 }
 
 
@@ -144,7 +155,7 @@ class Viewport(QtInteractor):
         self._draw_actors = []
         self._preview_actors = []
         self._press = None
-        self._mode = None  # None | "orbit_left" | "orbit_right" | "pull"
+        self._mode = None  # None | "orbit_left" | "orbit_right" | "pan" | "pull"
         self._pull = None
 
         self._picker = vtkCellPicker()
@@ -163,17 +174,12 @@ class Viewport(QtInteractor):
         self._label.SetVisibility(False)
         self.renderer.AddViewProp(self._label)
 
-        style = vtkInteractorStyleTrackballCamera()
-        self._style = style
-        self.iren.interactor.SetInteractorStyle(style)
-        for ev, cb in [("LeftButtonPressEvent", self._on_left_down),
-                       ("LeftButtonReleaseEvent", self._on_left_up),
-                       ("RightButtonPressEvent", self._on_right_down),
-                       ("RightButtonReleaseEvent", self._on_right_up),
-                       ("MouseMoveEvent", self._on_move),
-                       ("MouseWheelForwardEvent", lambda o, e: self._zoom(1.15)),
-                       ("MouseWheelBackwardEvent", lambda o, e: self._zoom(1 / 1.15))]:
-            style.AddObserver(ev, cb)
+        # VTK gets no mouse input at all (see the Qt event handlers below)
+        self.iren.interactor.SetInteractorStyle(vtkInteractorStyleUser())
+        self.setMouseTracking(True)
+        self._scale = 1.0
+        self._last = None
+        self._pivot = np.zeros(3)
 
         self._draw_bed()
         self.set_view("iso")
@@ -364,9 +370,10 @@ class Viewport(QtInteractor):
                 return {"kind": "face", "fid": int(self.fids[cid]), "point": hit}
         return None
 
-    def _pick_edge(self, x, y, hit, px=7.0):
+    def _pick_edge(self, x, y, hit, px=8.0):
         if getattr(self, "_seg_a", None) is None:
             return None
+        px *= self._scale
         m = np.array([x, y], float)
         a = self.world_to_display(self._seg_a)
         b = self.world_to_display(self._seg_b)
@@ -549,7 +556,7 @@ class Viewport(QtInteractor):
         self._draw_actors = []
         self._label.SetVisibility(False)
         if self.draw is not None:
-            self.draw.update(plane=None, pts=[], typed="")
+            self.draw.update(plane=None, pts=[], typed="", fid=None)
 
     def _plane_under(self, x, y):
         """Sketch plane under the cursor: a planar face or the print bed."""
@@ -570,13 +577,53 @@ class Viewport(QtInteractor):
         n, x = _np(nn), _np(x)
         return o, x, np.cross(n, x), n
 
-    def _cursor_uv(self, x, y, frame, fine):
+    def _snap_points(self, frame, fid=None):
+        """Points worth snapping to on this sketch plane: face centre, corners,
+        edge midpoints, hole centres and the points of coplanar sketches."""
+        o, ax, ay, n = frame
+        key = (tuple(np.round(o, 5)), tuple(np.round(n, 5)), fid)
+        if getattr(self, "_snap_key", None) == key:
+            return self._snap_cache
+        pts = [o]
+        faces = [self.faces[fid]] if fid is not None and fid < len(self.faces) else []
+        for f in faces:
+            for v in f.vertices():
+                pts.append(_np(v.center()))
+            for e in f.edges():
+                pts.append(_np(e.position_at(0.5)))
+                if e.geom_type == GeomType.CIRCLE:
+                    try:
+                        pts.append(_np(e.arc_center))
+                    except Exception:
+                        pass
+        for pr in self.profiles:
+            po, _px, _py, pn = pr["plane"]
+            if np.dot(pn, n) > 0.9999 and abs(np.dot(po - o, n)) < 1e-6:
+                pts.append(_np(pr["face"].center()))
+                pts.extend(pr["outline"][:-1:max(1, len(pr["outline"]) // 4)])
+        pts = np.array(pts, float)
+        uv = np.c_[(pts - o) @ ax, (pts - o) @ ay]
+        on_plane = np.abs((pts - o) @ n) < 1e-3 + self._eps() * 3
+        self._snap_key, self._snap_cache = key, uv[on_plane]
+        return self._snap_cache
+
+    def _cursor_uv(self, x, y, frame, fine, fid=None):
         o, ax, ay, n = frame
         ro, rd = self.ray(x, y)
         p = self.ray_plane(ro, rd, o, n)
         if p is None:
             return None
         uv = np.array([np.dot(p - o, ax), np.dot(p - o, ay)])
+        self._snapped = False
+        if not fine:
+            cands = self._snap_points(frame, fid)
+            if len(cands):
+                scr = self.world_to_display(o + np.outer(cands[:, 0], ax) + np.outer(cands[:, 1], ay))
+                dist = np.linalg.norm(scr - [x, y], axis=1)
+                k = int(np.argmin(dist))
+                if dist[k] < 12 * self._scale:
+                    self._snapped = True
+                    return cands[k].copy()
         step = 0.1 if fine else self.snap
         if step > 0:
             uv = np.round(uv / step) * step + 0.0
@@ -593,9 +640,11 @@ class Viewport(QtInteractor):
             (o, n), item = self._plane_under(x, y)
             frame = self._frame(o, n)
             self._set_hover(item)
+            fid = item["fid"] if item else None
         else:
             frame = d["plane"]
-        uv = self._cursor_uv(x, y, frame, fine)
+            fid = d.get("fid")
+        uv = self._cursor_uv(x, y, frame, fine, fid)
         if uv is None:
             return
         d["cursor"] = uv
@@ -626,7 +675,9 @@ class Viewport(QtInteractor):
             seg = np.array(cur) - np.array(pts[-1])
             label = f"{np.linalg.norm(seg):.1f} mm"
         marker = pv.PolyData(self._uv_world(frame, cur))
-        self._draw_actors.append(self.add_mesh(marker, color=SELECT, point_size=11, render_points_as_spheres=True,
+        snapped = getattr(self, "_snapped", False)
+        self._draw_actors.append(self.add_mesh(marker, color=ADD if snapped else SELECT,
+                                               point_size=16 if snapped else 11, render_points_as_spheres=True,
                                                pickable=False, reset_camera=False))
         if d["typed"]:
             label = {"circle": "D = ", "rect": "W,H = "}.get(self.tool, "") + d["typed"] + "_"
@@ -658,10 +709,11 @@ class Viewport(QtInteractor):
     def _draw_click(self, x, y, fine):
         d = self.draw
         if d["plane"] is None:
-            (o, n), _item = self._plane_under(x, y)
+            (o, n), item = self._plane_under(x, y)
             d["plane"] = self._frame(o, n)
+            d["fid"] = item["fid"] if item else None
             self._set_hover(None)
-        uv = self._cursor_uv(x, y, d["plane"], fine)
+        uv = self._cursor_uv(x, y, d["plane"], fine, d.get("fid"))
         if uv is None:
             return
         if not d["pts"]:
@@ -676,7 +728,7 @@ class Viewport(QtInteractor):
             return
         # polygon
         first = self.world_to_display(self._uv_world(d["plane"], d["pts"][0]))[0]
-        if len(d["pts"]) >= 3 and np.linalg.norm(first - [x, y]) < 10:
+        if len(d["pts"]) >= 3 and np.linalg.norm(first - [x, y]) < 12 * self._scale:
             self._commit({"kind": "poly", "pts": [list(p) for p in d["pts"]]})
             return
         if np.linalg.norm(np.array(d["pts"][-1]) - uv) > 1e-6:
@@ -713,26 +765,117 @@ class Viewport(QtInteractor):
                 self._commit({"kind": "rect", "c": [float(c[0]), float(c[1])], "w": w, "h": h})
 
     # --------------------------------------------------------------- events
-    def _event_pos(self):
-        return self.iren.interactor.GetEventPosition()
+    # All mouse input comes straight from Qt; VTK never sees it, so its
+    # interactor style can never move the camera or swallow events.
+    def _xy(self, ev):
+        """Qt logical widget coords -> VTK display coords (physical pixels)."""
+        pos = ev.position()
+        w, h = self._display_size()
+        sx = w / max(self.width(), 1)
+        sy = h / max(self.height(), 1)
+        self._scale = sx
+        return pos.x() * sx, (self.height() - pos.y()) * sy
 
-    def _on_left_down(self, obj, ev):
-        x, y = self._event_pos()
-        it = self.iren.interactor
-        shift, ctrl = bool(it.GetShiftKey()), bool(it.GetControlKey())
+    @staticmethod
+    def _mods(ev):
+        m = ev.modifiers()
+        return bool(m & Qt.ShiftModifier), bool(m & (Qt.ControlModifier | Qt.MetaModifier))
+
+    def mousePressEvent(self, ev):  # noqa: N802 - Qt API
+        x, y = self._xy(ev)
+        shift, ctrl = self._mods(ev)
         self.setFocus()
         self._press = (x, y)
+        self._last = ev.position()
+        b = ev.button()
+        if b == Qt.LeftButton:
+            self._left_down(x, y, shift, ctrl)
+        elif b == Qt.RightButton:
+            self._mode = "pan" if shift else "orbit_right"
+            self._set_pivot(x, y)
+        elif b == Qt.MiddleButton:
+            self._mode = "pan"
+            self._set_pivot(x, y)
+        ev.accept()
+
+    def mouseDoubleClickEvent(self, ev):  # noqa: N802
+        if ev.button() == Qt.LeftButton and self.tool == "poly" and self.draw and len(self.draw["pts"]) >= 3:
+            self._commit({"kind": "poly", "pts": [list(p) for p in self.draw["pts"]]})
+            ev.accept()
+            return
+        self.mousePressEvent(ev)
+
+    def mouseMoveEvent(self, ev):  # noqa: N802
+        x, y = self._xy(ev)
+        shift, _ctrl = self._mods(ev)
+        pos = ev.position()
+        last = getattr(self, "_last", None) or pos
+        dx, dy = pos.x() - last.x(), pos.y() - last.y()
+        self._last = pos
+        mode = self._mode
+        if mode in ("orbit_left", "orbit_right"):
+            self._orbit(dx, dy)
+        elif mode == "pan":
+            self._pan(dx, dy)
+        elif mode == "pull":
+            self._drag_pull(x, y, shift)
+        elif self.tool in DRAW_TOOLS:
+            self._draw_move(x, y, shift)
+        else:
+            self._hover_at(x, y)
+        ev.accept()
+
+    def mouseReleaseEvent(self, ev):  # noqa: N802
+        x, y = self._xy(ev)
+        moved = self._press is not None and math.dist(self._press, (x, y)) > 4 * self._scale
+        mode, self._mode = self._mode, None
+        if mode == "orbit_left" and not moved:
+            self.clear_selection()
+        elif mode == "orbit_right" and not moved:
+            self.escape()
+        elif mode == "pull":
+            self._finish_pull()
+        if mode in ("orbit_left", "orbit_right", "pan"):
+            self._update_arrow()
+            self.render()
+        ev.accept()
+
+    def wheelEvent(self, ev):  # noqa: N802
+        delta = ev.angleDelta().y() or ev.angleDelta().x()
+        if delta:
+            pos = ev.position()
+            w, h = self._display_size()
+            x = pos.x() * w / max(self.width(), 1)
+            y = (self.height() - pos.y()) * h / max(self.height(), 1)
+            self._zoom(x, y, 1.15 ** (delta / 120.0))
+        ev.accept()
+
+    def leaveEvent(self, ev):  # noqa: N802
+        if self._mode is None:
+            self._set_hover(None)
+        super().leaveEvent(ev)
+
+    def _hover_at(self, x, y):
+        item = self._pick_with_handle(x, y)
+        if item == "handle":
+            self.setCursor(Qt.SizeVerCursor)
+            self._set_hover(None)
+            return
+        self.setCursor(Qt.PointingHandCursor if item is not None else Qt.ArrowCursor)
+        self._set_hover(item)
+
+    def _left_down(self, x, y, shift, ctrl):
         if self.tool in DRAW_TOOLS:
             self._draw_click(x, y, shift)
             return
         item = self._pick_with_handle(x, y)
-        if item == "handle" or (item is not None and self._key(item) in {self._key(s) for s in self.selection}
-                                and self.pull_target() is not None and not (shift or ctrl)):
+        selected = item not in (None, "handle") and self._key(item) in {self._key(s) for s in self.selection}
+        if item == "handle" or (selected and self.pull_target() is not None and not (shift or ctrl)):
             self._start_pull(x, y)
             return
         if item is None:
             self._mode = "orbit_left"
-            self._style.OnLeftButtonDown()
+            self._set_pivot(x, y)
             return
         self._click_select(item, shift or ctrl)
 
@@ -743,54 +886,63 @@ class Viewport(QtInteractor):
                 return "handle"
         return self.pick(x, y)
 
-    def _on_left_up(self, obj, ev):
-        x, y = self._event_pos()
-        if self._mode == "orbit_left":
-            self._style.OnLeftButtonUp()
-            moved = self._press and math.dist(self._press, (x, y)) > 3
-            if not moved:
-                self.clear_selection()
-            self._update_arrow()
-            self.render()
-        elif self._mode == "pull":
-            self._finish_pull()
-        self._mode = None
+    # ------------------------------------------------------------- camera
+    def _set_pivot(self, x, y):
+        """Orbit around the point under the cursor (or the model centre)."""
+        self._picker.Pick(x, y, 0, self.renderer)
+        if self._picker.GetActor() is not None:
+            self._pivot = np.array(self._picker.GetPickPosition())
+        elif self._bounds is not None:
+            b = self._bounds
+            self._pivot = np.array([(b[0] + b[1]) / 2, (b[2] + b[3]) / 2, (b[4] + b[5]) / 2])
+        else:
+            self._pivot = np.array(self.renderer.GetActiveCamera().GetFocalPoint())
 
-    def _on_right_down(self, obj, ev):
-        self._press = self._event_pos()
-        self._mode = "orbit_right"
-        self._style.OnLeftButtonDown()
+    @staticmethod
+    def _rot(axis, deg):
+        axis = np.asarray(axis, float)
+        axis = axis / np.linalg.norm(axis)
+        a = math.radians(deg)
+        k = np.array([[0, -axis[2], axis[1]], [axis[2], 0, -axis[0]], [-axis[1], axis[0], 0]])
+        return np.eye(3) + math.sin(a) * k + (1 - math.cos(a)) * (k @ k)
 
-    def _on_right_up(self, obj, ev):
-        x, y = self._event_pos()
-        self._style.OnLeftButtonUp()
-        if self._press and math.dist(self._press, (x, y)) <= 3:
-            self.escape()
-        self._mode = None
-        self._update_arrow()
+    def _orbit(self, dx, dy):
+        """Turntable orbit: Z always stays up, like Shapr3D (no tilting)."""
+        cam = self.renderer.GetActiveCamera()
+        pos, fp = np.array(cam.GetPosition()), np.array(cam.GetFocalPoint())
+        pivot = getattr(self, "_pivot", fp)
+        z = np.array([0.0, 0.0, 1.0])
+        rz = self._rot(z, -dx * 0.35)
+        pos, fp = pivot + rz @ (pos - pivot), pivot + rz @ (fp - pivot)
+        view = (fp - pos) / np.linalg.norm(fp - pos)
+        right = np.cross(view, z)
+        if np.linalg.norm(right) > 1e-6:
+            re = self._rot(right, -dy * 0.35)
+            new_view = re @ view
+            if abs(np.dot(new_view, z)) < 0.995:  # never flip over the top
+                pos, fp = pivot + re @ (pos - pivot), pivot + re @ (fp - pivot)
+        cam.SetPosition(*pos)
+        cam.SetFocalPoint(*fp)
+        cam.SetViewUp(0, 0, 1)
+        cam.OrthogonalizeViewUp()
+        self.renderer.ResetCameraClippingRange()
         self.render()
 
-    def _on_move(self, obj, ev):
-        x, y = self._event_pos()
-        if self._mode == "pull":
-            self._drag_pull(x, y)
-            return
-        self._style.OnMouseMove()
-        if self._mode in ("orbit_left", "orbit_right") or self._style.GetState() != 0:
-            return
-        if self.tool in DRAW_TOOLS:
-            self._draw_move(x, y, bool(self.iren.interactor.GetShiftKey()))
-            return
-        item = self._pick_with_handle(x, y)
-        if item == "handle":
-            self.setCursor(Qt.SizeVerCursor)
-            self._set_hover(None)
-            return
-        self.setCursor(Qt.PointingHandCursor if item is not None else Qt.ArrowCursor)
-        self._set_hover(item)
+    def _pan(self, dx, dy):
+        cam = self.renderer.GetActiveCamera()
+        pos, fp = np.array(cam.GetPosition()), np.array(cam.GetFocalPoint())
+        view = (fp - pos) / np.linalg.norm(fp - pos)
+        up = np.array(cam.GetViewUp())
+        right = np.cross(view, up)
+        step = self.pixel_size(fp) * self._scale
+        delta = (-dx * right + dy * up) * step
+        cam.SetPosition(*(pos + delta))
+        cam.SetFocalPoint(*(fp + delta))
+        self.renderer.ResetCameraClippingRange()
+        self.render()
 
-    def _zoom(self, factor):
-        x, y = self._event_pos()
+    def _zoom(self, x, y, factor):
+        """Zoom towards the point under the cursor."""
         cam = self.renderer.GetActiveCamera()
         pos, fp = np.array(cam.GetPosition()), np.array(cam.GetFocalPoint())
         o, d = self.ray(x, y)
@@ -798,12 +950,22 @@ class Viewport(QtInteractor):
         p = self.ray_plane(o, d, fp, view / np.linalg.norm(view))
         if p is None:
             p = fp
-        cam.SetPosition(*(p + (pos - p) / factor))
-        cam.SetFocalPoint(*(p + (fp - p) / factor))
+        if cam.GetParallelProjection():
+            cam.SetParallelScale(cam.GetParallelScale() / factor)
+            shift = (p - fp) * (1 - 1 / factor)
+            cam.SetPosition(*(pos + shift))
+            cam.SetFocalPoint(*(fp + shift))
+        else:
+            cam.SetPosition(*(p + (pos - p) / factor))
+            cam.SetFocalPoint(*(p + (fp - p) / factor))
         self.renderer.ResetCameraClippingRange()
         if self._arrow is not None:
             self._update_arrow()
         self.render()
+
+    def set_parallel(self, on: bool):
+        self.renderer.GetActiveCamera().SetParallelProjection(bool(on))
+        self.fit()
 
     def escape(self):
         if self.tool in DRAW_TOOLS:
@@ -859,27 +1021,43 @@ class Viewport(QtInteractor):
         super().enterEvent(event)
 
     # ----------------------------------------------------------------- pull
+    def _line_param(self, x, y, anchor, n):
+        """Parameter t of the point on the 3D line anchor + t*n closest to the
+        mouse ray: exact distance along the arrow, independent of perspective."""
+        o, d = self.ray(x, y)
+        d = d / np.linalg.norm(d)
+        w0 = anchor - o
+        b = np.dot(n, d)
+        denom = 1.0 - b * b
+        if denom < 1e-6:  # looking straight along the arrow
+            return None
+        return (b * np.dot(d, w0) - np.dot(n, w0)) / denom
+
     def _start_pull(self, x, y):
         tgt = self.pull_target()
         if tgt is None or self._arrow is None:
             return
         anchor, n, faces = tgt
-        length = self._arrow[2]
-        s = self.world_to_display([anchor, anchor + n * length])
-        sdir = s[1] - s[0]
-        if np.dot(sdir, sdir) < 4:  # looking straight down the normal
-            sdir = np.array([0.0, 60.0])
+        n = n / np.linalg.norm(n)
+        t0 = self._line_param(x, y, anchor, n)
         self._mode = "pull"
-        self._pull = {"start": np.array([x, y], float), "sdir": sdir, "len": length, "n": n, "faces": faces,
-                      "d": 0.0, "anchor": anchor}
+        self._pull = {"start": np.array([x, y], float), "t0": t0, "n": n, "faces": faces, "d": 0.0,
+                      "anchor": anchor, "len": self._arrow[2]}
 
-    def _drag_pull(self, x, y):
+    def _drag_pull(self, x, y, fine=False):
         p = self._pull
-        m = np.array([x, y], float) - p["start"]
-        t = np.dot(m, p["sdir"]) / np.dot(p["sdir"], p["sdir"])
-        fine = bool(self.iren.interactor.GetShiftKey())
+        t = self._line_param(x, y, p["anchor"], p["n"])
+        if t is None or p["t0"] is None:  # fall back to screen-space movement
+            s = self.world_to_display([p["anchor"], p["anchor"] + p["n"] * p["len"]])
+            sdir = s[1] - s[0]
+            if np.dot(sdir, sdir) < 4:
+                sdir = np.array([0.0, 60.0])
+            m = np.array([x, y], float) - p["start"]
+            raw = np.dot(m, sdir) / np.dot(sdir, sdir) * p["len"]
+        else:
+            raw = t - p["t0"]
         step = 0.1 if fine else max(self.snap, 0.1)
-        d = round(t * p["len"] / step) * step
+        d = round(raw / step) * step
         if abs(d - p["d"]) < 1e-9:
             return
         p["d"] = d
