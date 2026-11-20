@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..model import Feature
+from ..model import Feature, format_points, get_path, sketch_params
 
 
 def hidden_keys(feat: Feature) -> set[str]:
@@ -77,6 +77,7 @@ class PropertyPanel(QScrollArea):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.feature: Feature | None = None
         self._rows: dict[str, tuple[QFormLayout, QWidget]] = {}
         self._groups: dict[str, QGroupBox] = {}
@@ -112,7 +113,12 @@ class PropertyPanel(QScrollArea):
         lay.addWidget(self._error)
         self.set_error(feat.error)
 
-        for prm in feat.ftype.params:
+        params = [p for p in feat.ftype.params if p.kind != "hidden"]
+        if feat.type_id == "sketch":
+            params += sketch_params(feat)
+            if not params:
+                lay.addWidget(QLabel("สเก็ตช์ว่าง"))
+        for prm in params:
             box = self._groups.get(prm.group)
             if box is None:
                 box = QGroupBox(prm.group)
@@ -121,7 +127,11 @@ class PropertyPanel(QScrollArea):
                 self._groups[prm.group] = box
                 lay.addWidget(box)
             form = box.layout()
-            w = self._make_editor(prm, feat.params.get(prm.key, prm.default))
+            try:
+                value = get_path(feat.params, prm.key)
+            except (KeyError, IndexError, ValueError):
+                value = prm.default
+            w = self._make_editor(prm, value)
             form.addRow(prm.label, w)
             self._rows[prm.key] = (form, w)
         lay.addStretch(1)
@@ -154,6 +164,8 @@ class PropertyPanel(QScrollArea):
             w.valueChanged.connect(lambda v, k=key: self._emit(k, int(v)))
         elif prm.kind == "choice":
             w = Combo()
+            w.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            w.setMinimumContentsLength(8)
             for val, label in prm.choices:
                 w.addItem(label, val)
             idx = max(w.findData(value), 0)
@@ -180,6 +192,9 @@ class PropertyPanel(QScrollArea):
             btn.clicked.connect(pick)
             h.addWidget(edit, 1)
             h.addWidget(btn)
+        elif prm.kind == "points":
+            w = QLineEdit(format_points(value))
+            w.editingFinished.connect(lambda k=key, e=w: self._emit(k, e.text()))
         else:
             w = QLineEdit(str(value))
             w.editingFinished.connect(lambda k=key, e=w: self._emit(k, e.text()))

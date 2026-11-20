@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import copy
 import json
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -16,6 +17,7 @@ from build123d import (
     Circle,
     Cone,
     Cylinder,
+    GeomType,
     Part,
     Plane,
     Polygon,
@@ -28,6 +30,7 @@ from build123d import (
     Sphere,
     Text,
     Torus,
+    Vector,
     chamfer,
     extrude,
     fillet,
@@ -48,7 +51,7 @@ BED = (Align.CENTER, Align.CENTER, Align.MIN)  # sit objects on the print bed
 class Param:
     key: str
     label: str
-    kind: str = "float"  # float | int | choice | str | bool | file
+    kind: str = "float"  # float | int | choice | str | bool | file | hidden
     default: Any = 0.0
     min: float = -10000.0
     max: float = 10000.0
@@ -62,7 +65,8 @@ class Param:
 class FeatureType:
     type_id: str
     label: str
-    category: str  # "body" (adds/cuts geometry) or "modify" (changes the part)
+    category: str  # "body" (placed tool solid), "modify" (changes the part),
+    #                "sketch" (2D profiles), "op" (uses other features via ctx)
     params: list[Param]
     build: Callable
     icon: str = "■"
@@ -70,6 +74,7 @@ class FeatureType:
 
 MODE_CHOICES = [("add", "เพิ่มเนื้อ (Union)"), ("cut", "ตัดออก (Cut)"), ("intersect", "เหลือส่วนที่ซ้อนกัน")]
 EDGE_CHOICES = [
+    ("picked", "ที่คลิกเลือก"),
     ("all", "ทุกขอบ"),
     ("top", "ขอบด้านบน"),
     ("bottom", "ขอบด้านล่าง"),
@@ -211,7 +216,54 @@ def _import_step(p):
 # Modifier builders: (part, params) -> part
 # ---------------------------------------------------------------------------
 
-def select_edges(part, which):
+def find_face(part, ref):
+    """Find the planar face that best matches a stored reference
+    {"p": point on face, "n": outward normal}."""
+    n = Vector(*ref["n"])
+    pt = Vector(*ref["p"])
+    best = None
+    for f in part.faces():
+        if f.geom_type != GeomType.PLANE:
+            continue
+        if f.normal_at().dot(n) < 0.999:
+            continue
+        d = f.distance_to(pt)
+        if best is None or d < best[0]:
+            best = (d, f)
+    if best is None:
+        raise ValueError("ไม่พบหน้าที่เลือกไว้ (รูปทรงเปลี่ยนไปมาก) ลองเลือกหน้าใหม่")
+    return best[1]
+
+
+def find_edges(part, refs, tol=2.0):
+    edges = part.edges()
+    out = []
+    for r in refs:
+        pt = Vector(*r)
+        e = min(edges, key=lambda e: e.distance_to(pt))
+        if e.distance_to(pt) > tol:
+            raise ValueError("ไม่พบขอบที่เลือกไว้ (รูปทรงเปลี่ยนไป) ลองเลือกขอบใหม่")
+        if not any(e.is_same(o) for o in out):
+            out.append(e)
+    return out
+
+
+def face_ref(face, point=None):
+    c = Vector(*point) if point is not None else face.center()
+    n = face.normal_at()
+    return {"p": [c.X, c.Y, c.Z], "n": [n.X, n.Y, n.Z]}
+
+
+def edge_ref(edge):
+    m = edge.position_at(0.5)
+    return [m.X, m.Y, m.Z]
+
+
+def select_edges(part, which, refs=None):
+    if which == "picked":
+        if not refs:
+            raise ValueError("ยังไม่ได้เลือกขอบ")
+        return find_edges(part, refs)
     edges = part.edges()
     if which == "top":
         return edges.group_by(Axis.Z)[-1]
@@ -231,12 +283,12 @@ def _need_part(part):
 
 def _fillet(part, p):
     _need_part(part)
-    return fillet(select_edges(part, p["edges"]), p["radius"])
+    return fillet(select_edges(part, p["edges"], p.get("edge_refs")), p["radius"])
 
 
 def _chamfer(part, p):
     _need_part(part)
-    return chamfer(select_edges(part, p["edges"]), p["length"])
+    return chamfer(select_edges(part, p["edges"], p.get("edge_refs")), p["length"])
 
 
 def _shell(part, p):
@@ -247,6 +299,10 @@ def _shell(part, p):
         openings = faces.sort_by(Axis.Z)[-1]
     elif p["opening"] == "bottom":
         openings = faces.sort_by(Axis.Z)[0]
+    elif p["opening"] == "picked":
+        if not p.get("face_refs"):
+            raise ValueError("ยังไม่ได้เลือกหน้าที่จะเปิด")
+        openings = [find_face(part, r) for r in p["face_refs"]]
     return offset(part, amount=-abs(p["thickness"]), openings=openings)
 
 
@@ -265,6 +321,118 @@ def _mirror(part, p):
 def _scale(part, p):
     _need_part(part)
     return part.scale(p["factor"] / 100.0)
+
+
+# ---------------------------------------------------------------------------
+# Sketches drawn on faces and the operations that use them
+# ---------------------------------------------------------------------------
+
+def plane_axes(normal):
+    """Deterministic in-plane X axis for a sketch plane with this normal."""
+    n = Vector(*normal).normalized()
+    if abs(n.Z) > 0.999:
+        x = Vector(1, 0, 0)
+    else:
+        x = Vector(0, 0, 1).cross(n).normalized()
+    return n, x
+
+
+def make_plane(p) -> Plane:
+    n, x = plane_axes(p["normal"])
+    return Plane(origin=Vector(*p["origin"]), x_dir=x, z_dir=n)
+
+
+def shape_face(plane: Plane, s: dict):
+    kind = s["kind"]
+    if kind == "circle":
+        if s["r"] <= 0:
+            raise ValueError("รัศมีต้องมากกว่า 0")
+        sk = Pos(s["c"][0], s["c"][1]) * Circle(s["r"])
+    elif kind == "rect":
+        if s["w"] <= 0 or s["h"] <= 0:
+            raise ValueError("ขนาดสี่เหลี่ยมต้องมากกว่า 0")
+        sk = Pos(s["c"][0], s["c"][1]) * Rectangle(s["w"], s["h"])
+    elif kind == "poly":
+        if len(s["pts"]) < 3:
+            raise ValueError("รูปหลายเหลี่ยมต้องมีอย่างน้อย 3 จุด")
+        sk = Polygon(*[tuple(pt) for pt in s["pts"]], align=None)
+    else:
+        raise ValueError(f"ไม่รู้จักรูป {kind}")
+    return plane * sk
+
+
+def build_sketch(p):
+    plane = make_plane(p)
+    faces = []
+    errors = []
+    for i, s in enumerate(p["shapes"]):
+        try:
+            faces.append(shape_face(plane, s))
+        except Exception as exc:
+            faces.append(None)
+            errors.append(f"รูปที่ {i + 1}: {exc}")
+    return plane, faces, errors
+
+
+def _sign(d):
+    return 1.0 if d > 0 else -1.0
+
+
+def _through_distance(part, d):
+    size = part.bounding_box().diagonal if part is not None else 100.0
+    return _sign(d if d else -1) * (size * 2 + 10)
+
+
+def _apply(part, tool, mode, d):
+    if mode == "auto":
+        mode = "add" if d > 0 else "cut"
+    if part is None:
+        if mode != "add":
+            raise ValueError("ยังไม่มีเนื้อให้เจาะ ลองดึงขึ้นแทน")
+        return tool
+    if mode == "add":
+        return part + tool
+    if mode == "cut":
+        return part - tool
+    return part & tool
+
+
+def _pull(part, p, ctx):
+    sk = ctx["sketches"].get(p["sketch"])
+    if sk is None:
+        raise ValueError("ไม่พบสเก็ตช์ที่ใช้ (อาจถูกลบหรือปิดอยู่)")
+    plane, faces = sk
+    d = float(p["distance"])
+    if p.get("through"):
+        d = _through_distance(part, d)
+    if abs(d) < 1e-6:
+        raise ValueError("ระยะดึงต้องไม่เป็น 0")
+    tool = None
+    for idx in p["shapes"]:
+        if not (0 <= idx < len(faces)) or faces[idx] is None:
+            raise ValueError("ไม่พบรูปในสเก็ตช์")
+        t = extrude(faces[idx], amount=abs(d), dir=plane.z_dir * _sign(d))
+        tool = t if tool is None else tool + t
+    return _apply(part, tool, p.get("mode", "auto"), d), tool
+
+
+def _pushpull(part, p, ctx):
+    _need_part(part)
+    d = float(p["distance"])
+    if p.get("through"):
+        d = _through_distance(part, d)
+    if abs(d) < 1e-6:
+        raise ValueError("ระยะดึงต้องไม่เป็น 0")
+    tool = None
+    for ref in p["face_refs"]:
+        face = find_face(part, ref)
+        t = extrude(face, amount=abs(d), dir=face.normal_at() * _sign(d))
+        tool = t if tool is None else tool + t
+    return _apply(part, tool, p.get("mode", "auto"), d), tool
+
+
+PULL_MODES = [("auto", "อัตโนมัติ"), ("add", "เพิ่มเนื้อ"), ("cut", "ตัดออก"),
+              ("intersect", "เหลือส่วนที่ซ้อนกัน")]
 
 
 # ---------------------------------------------------------------------------
@@ -318,15 +486,19 @@ for _p in FEATURE_TYPES["hole"].params:  # holes cut by default
         _p.default = "cut"
 
 _reg(FeatureType("fillet", "ลบมุมโค้ง", "modify", [
-    Param("edges", "ขอบที่เลือก", "choice", "vertical", choices=EDGE_CHOICES), _dim("radius", "รัศมี", 2, 0.01),
+    Param("edges", "ขอบ", "choice", "vertical", choices=EDGE_CHOICES), _dim("radius", "รัศมี", 2, 0.01, step=0.5),
+    Param("edge_refs", "", "hidden", []),
 ], _fillet, "◜"))
 _reg(FeatureType("chamfer", "ลบมุมเฉียง", "modify", [
-    Param("edges", "ขอบที่เลือก", "choice", "top", choices=EDGE_CHOICES), _dim("length", "ระยะ", 1, 0.01),
+    Param("edges", "ขอบ", "choice", "top", choices=EDGE_CHOICES), _dim("length", "ระยะ", 1, 0.01, step=0.5),
+    Param("edge_refs", "", "hidden", []),
 ], _chamfer, "◸"))
 _reg(FeatureType("shell", "ทำให้กลวง", "modify", [
     _dim("thickness", "ความหนาผนัง", 1.6, 0.01, step=0.2),
     Param("opening", "ด้านที่เปิด", "choice", "top",
-          choices=[("top", "เปิดด้านบน"), ("bottom", "เปิดด้านล่าง"), ("none", "ปิดทุกด้าน")]),
+          choices=[("top", "เปิดด้านบน"), ("bottom", "เปิดด้านล่าง"), ("picked", "หน้าที่คลิกเลือก"),
+                   ("none", "ปิดทุกด้าน")]),
+    Param("face_refs", "", "hidden", []),
 ], _shell, "▢"))
 _reg(FeatureType("mirror", "สะท้อน", "modify", [
     Param("plane", "ระนาบ", "choice", "YZ", choices=[("YZ", "YZ (ซ้าย-ขวา)"), ("XZ", "XZ (หน้า-หลัง)"), ("XY", "XY (บน-ล่าง)")]),
@@ -336,6 +508,24 @@ _reg(FeatureType("mirror", "สะท้อน", "modify", [
 _reg(FeatureType("scale", "ย่อ/ขยาย", "modify", [
     Param("factor", "สเกล", "float", 100.0, 1, 10000, 5, " %"),
 ], _scale, "⤢"))
+_reg(FeatureType("sketch", "สเก็ตช์", "sketch", [
+    Param("origin", "", "hidden", [0.0, 0.0, 0.0]),
+    Param("normal", "", "hidden", [0.0, 0.0, 1.0]),
+    Param("shapes", "", "hidden", []),
+], build_sketch, "✎"))
+_reg(FeatureType("pull", "ดึงสเก็ตช์", "op", [
+    Param("distance", "ระยะ (+ขึ้น / −ลง)", "float", 10.0, -10000, 10000, 1),
+    Param("through", "เจาะทะลุ", "bool", False, suffix=""),
+    Param("mode", "การทำงาน", "choice", "auto", choices=PULL_MODES),
+    Param("sketch", "", "hidden", ""),
+    Param("shapes", "", "hidden", [0]),
+], _pull, "⇧"))
+_reg(FeatureType("pushpull", "ดึงหน้า", "op", [
+    Param("distance", "ระยะ (+ออก / −เข้า)", "float", 5.0, -10000, 10000, 1),
+    Param("through", "ทะลุ", "bool", False, suffix=""),
+    Param("mode", "การทำงาน", "choice", "auto", choices=PULL_MODES),
+    Param("face_refs", "", "hidden", []),
+], _pushpull, "⇕"))
 
 
 # ---------------------------------------------------------------------------
@@ -348,6 +538,7 @@ class Feature:
     name: str
     params: dict[str, Any]
     enabled: bool = True
+    uid: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
     error: str | None = field(default=None, compare=False)
 
     @property
@@ -357,18 +548,21 @@ class Feature:
     @classmethod
     def new(cls, type_id: str, name: str | None = None, **overrides) -> "Feature":
         ft = FEATURE_TYPES[type_id]
-        params = {p.key: p.default for p in ft.params}
-        params.update(overrides)
+        params = {p.key: copy.deepcopy(p.default) for p in ft.params}
+        params.update(copy.deepcopy(overrides))
         return cls(type_id, name or ft.label, params)
 
     def to_dict(self):
-        return {"type": self.type_id, "name": self.name, "enabled": self.enabled, "params": self.params}
+        return {"type": self.type_id, "name": self.name, "enabled": self.enabled, "uid": self.uid,
+                "params": self.params}
 
     @classmethod
     def from_dict(cls, d):
         f = cls.new(d["type"], d.get("name"))
         f.params.update(d.get("params", {}))
         f.enabled = d.get("enabled", True)
+        if d.get("uid"):
+            f.uid = d["uid"]
         return f
 
 
@@ -399,11 +593,13 @@ def place(tool, p):
     return result
 
 
-def build_feature(part, feat: Feature):
+def build_feature(part, feat: Feature, ctx=None):
     ft = feat.ftype
     p = feat.params
     if ft.category == "modify":
         return ft.build(part, p), None
+    if ft.category == "op":
+        return ft.build(part, p, ctx)
     tool = place(ft.build(p), p)
     mode = p.get("mode", "add")
     if part is None:
@@ -430,13 +626,21 @@ def rebuild(features: list[Feature]):
     solid of feature i (or None). Errors are stored on each feature."""
     part = None
     tools: list = []
+    ctx = {"sketches": {}}
     for feat in features:
         feat.error = None
         if not feat.enabled:
             tools.append(None)
             continue
+        if feat.ftype.category == "sketch":
+            plane, faces, errors = build_sketch(feat.params)
+            ctx["sketches"][feat.uid] = (plane, faces)
+            if errors:
+                feat.error = "; ".join(errors)
+            tools.append(None)
+            continue
         try:
-            new_part, tool = build_feature(part, feat)
+            new_part, tool = build_feature(part, feat, ctx)
             if new_part is not None and getattr(new_part, "volume", 1) <= 1e-9 and part is not None:
                 raise ValueError("ผลลัพธ์ไม่มีเนื้อเหลือ")
             part = new_part
@@ -496,14 +700,70 @@ class Document:
             i += 1
         return f"{base} {i}"
 
-    def add(self, type_id: str, index: int | None = None, **overrides) -> Feature:
-        self.checkpoint()
+    def add(self, type_id: str, index: int | None = None, checkpoint=True, **overrides) -> Feature:
+        if checkpoint:
+            self.checkpoint()
         f = Feature.new(type_id, self.unique_name(FEATURE_TYPES[type_id].label), **overrides)
         if index is None:
             self.features.append(f)
         else:
             self.features.insert(index, f)
         return f
+
+    def by_uid(self, uid):
+        return next((f for f in self.features if f.uid == uid), None)
+
+    def consumed_shapes(self) -> set[tuple[str, int]]:
+        """Sketch shapes already used by an enabled pull."""
+        used = set()
+        for f in self.features:
+            if f.type_id == "pull" and f.enabled:
+                used |= {(f.params["sketch"], i) for i in f.params["shapes"]}
+        return used
+
+    def add_sketch_shape(self, plane: dict, shape: dict) -> tuple[Feature, int]:
+        """Add a drawn shape to an existing coplanar sketch, or start a new one."""
+        n_new, x = plane_axes(plane["normal"])
+        o_new = Vector(*plane["origin"])
+        y = n_new.cross(x)
+        for f in reversed(self.features):
+            if f.type_id != "sketch":
+                continue
+            n_old = Vector(*f.params["normal"]).normalized()
+            o_old = Vector(*f.params["origin"])
+            if n_old.dot(n_new) > 0.9999 and abs((o_new - o_old).dot(n_old)) < 1e-6:
+                du, dv = (o_new - o_old).dot(x), (o_new - o_old).dot(y)
+                s = copy.deepcopy(shape)
+                if "c" in s:
+                    s["c"] = [s["c"][0] + du, s["c"][1] + dv]
+                if "pts" in s:
+                    s["pts"] = [[p[0] + du, p[1] + dv] for p in s["pts"]]
+                self.checkpoint()
+                f.params["shapes"].append(s)
+                f.enabled = True
+                return f, len(f.params["shapes"]) - 1
+        f = self.add("sketch", origin=list(plane["origin"]), normal=list(plane["normal"]), shapes=[shape])
+        return f, 0
+
+    def delete_shapes(self, uid: str, idxs: list[int]):
+        """Remove shapes from a sketch and fix up the pulls that use them."""
+        sk = self.by_uid(uid)
+        if sk is None:
+            return
+        self.checkpoint()
+        idxs = sorted(set(idxs), reverse=True)
+        for i in idxs:
+            if 0 <= i < len(sk.params["shapes"]):
+                del sk.params["shapes"][i]
+        for f in list(self.features):
+            if f.type_id == "pull" and f.params["sketch"] == uid:
+                kept = [i - sum(1 for d in idxs if d < i) for i in f.params["shapes"] if i not in idxs]
+                if kept:
+                    f.params["shapes"] = kept
+                else:
+                    self.features.remove(f)
+        if not sk.params["shapes"]:
+            self.features.remove(sk)
 
     def remove(self, index: int):
         self.checkpoint()
@@ -513,6 +773,7 @@ class Document:
         self.checkpoint()
         src = self.features[index]
         f = Feature.from_dict(copy.deepcopy(src.to_dict()))
+        f.uid = uuid.uuid4().hex[:8]
         f.name = self.unique_name(src.ftype.label)
         self.features.insert(index + 1, f)
         return f
@@ -564,3 +825,53 @@ def part_info(part, material="PLA"):
         "volume_cm3": vol_mm3 / 1000.0,
         "weight_g": vol_mm3 / 1000.0 * MATERIALS.get(material, 1.24),
     }
+
+
+# ---------------------------------------------------------------------------
+# Dotted parameter paths (used to edit sketch shapes in the property panel)
+# ---------------------------------------------------------------------------
+
+def get_path(params, key):
+    cur = params
+    for part in key.split("."):
+        cur = cur[int(part)] if isinstance(cur, list) else cur[part]
+    return cur
+
+
+def set_path(params, key, value):
+    parts = key.split(".")
+    cur = params
+    for part in parts[:-1]:
+        cur = cur[int(part)] if isinstance(cur, list) else cur[part]
+    last = parts[-1]
+    if last == "pts" and isinstance(value, str):
+        value = [list(p) for p in _parse_points(value)]
+    if isinstance(cur, list):
+        cur[int(last)] = value
+    else:
+        cur[last] = value
+
+
+SHAPE_LABELS = {"circle": "วงกลม", "rect": "สี่เหลี่ยม", "poly": "หลายเหลี่ยม"}
+
+
+def sketch_params(feat: Feature) -> list[Param]:
+    out = []
+    for i, s in enumerate(feat.params.get("shapes", [])):
+        g = f"{i + 1}. {SHAPE_LABELS.get(s['kind'], s['kind'])}"
+        k = f"shapes.{i}"
+        if s["kind"] in ("circle", "rect"):
+            out += [Param(f"{k}.c.0", "ศูนย์กลาง X", "float", 0.0, group=g),
+                    Param(f"{k}.c.1", "ศูนย์กลาง Y", "float", 0.0, group=g)]
+        if s["kind"] == "circle":
+            out.append(Param(f"{k}.r", "รัศมี", "float", 5.0, 0.01, 10000, 0.5, group=g))
+        elif s["kind"] == "rect":
+            out += [Param(f"{k}.w", "กว้าง", "float", 10.0, 0.01, 10000, group=g),
+                    Param(f"{k}.h", "สูง", "float", 10.0, 0.01, 10000, group=g)]
+        elif s["kind"] == "poly":
+            out.append(Param(f"{k}.pts", "จุด (x,y; ...)", "points", "", suffix="", group=g))
+    return out
+
+
+def format_points(pts):
+    return "; ".join(f"{x:g},{y:g}" for x, y in pts)
